@@ -1,0 +1,64 @@
+{
+  "name": "nova-deck",
+  "version": "0.1.0",
+  "description": "A local-first Windows console shell for PC games.",
+  "main": "src/main.js",
+  "type": "commonjs",
+  "author": "ThinkLinkYT",
+  "private": true,
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/ThinkLinkYT/nova-deck.git"
+  },
+  "bugs": {
+    "url": "https://github.com/ThinkLinkYT/nova-deck/issues"
+  },
+  "homepage": "https://github.com/ThinkLinkYT/nova-deck#readme",
+  "scripts": {
+    "start": "electron .",
+    "start:vendor": ".vendor\\electron\\electron.exe .",
+    "install-app": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/install.ps1 -Launch",
+    "dist:win": "electron-builder --win --x64",
+    "publish:win": "electron-builder --win --x64 --publish always",
+    "check": "node --check src/main.js && node --check src/preload.js && node --check src/scanner.js && node --check src/launcher.js && node --check src/storage.js && node --check src/icon-cache.js && node --check src/updater.js && node --check src/renderer/app.js"
+  },
+  "build": {
+    "appId": "com.thinklinkyt.novadeck",
+    "productName": "Nova Deck",
+    "copyright": "Copyright © 2026 Nova Deck",
+    "directories": {
+      "output": "dist"
+    },
+    "files": [
+      "src/**/*",
+      "README.md",
+      "package.json"
+    ],
+    "win": {
+      "target": "nsis",
+      "icon": "src/renderer/assets/nova-deck-icon.ico"
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "Nova Deck"
+    },
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "ThinkLinkYT",
+        "repo": "nova-deck"
+      }
+    ]
+  },
+  "dependencies": {
+    "electron-updater": "^6.8.3"
+  },
+  "devDependencies": {
+    "electron": "^42.3.0",
+    "electron-builder": "^26.8.1"
+  }
+}

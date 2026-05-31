@@ -1,0 +1,196 @@
+const fs = require("fs");
+const path = require("path");
+
+const STORE_FILE = "library.json";
+const DEFAULT_APP_SETTINGS = {
+  audioOutputId: "default",
+  audioOutputLabel: "System default",
+  startView: "home",
+  rescanOnStart: true,
+  reduceMotion: false,
+  showHiddenLaunchers: false
+};
+
+const DEFAULT_CONTROLLER_SETTINGS = {
+  deadzone: 0.55,
+  repeatDelay: 180,
+  mappings: {
+    confirm: { label: "Confirm / Launch", buttons: [0] },
+    back: { label: "Back / Clear Search", buttons: [1] },
+    search: { label: "Focus Search", buttons: [2] },
+    scan: { label: "Rescan Library", buttons: [3] },
+    fullscreen: { label: "Toggle Fullscreen", buttons: [9] },
+    home: { label: "Home View", buttons: [8] },
+    library: { label: "All Games View", buttons: [4] },
+    settings: { label: "Settings View", buttons: [5] }
+  }
+};
+
+function createStore(userDataPath) {
+  const filePath = path.join(userDataPath, STORE_FILE);
+  ensureDirectory(userDataPath);
+
+  function readStore() {
+    try {
+      if (!fs.existsSync(filePath)) {
+        return {
+          customGames: [],
+          controllerSettings: normalizeControllerSettings(),
+          appSettings: normalizeAppSettings()
+        };
+      }
+
+      const parsed = JSON.parse(fs.readFileSync(filePath, "utf8"));
+      return {
+        customGames: Array.isArray(parsed.customGames) ? parsed.customGames : [],
+        controllerSettings: normalizeControllerSettings(parsed.controllerSettings),
+        appSettings: normalizeAppSettings(parsed.appSettings)
+      };
+    } catch {
+      return {
+        customGames: [],
+        controllerSettings: normalizeControllerSettings(),
+        appSettings: normalizeAppSettings()
+      };
+    }
+  }
+
+  function writeStore(nextStore) {
+    fs.writeFileSync(filePath, JSON.stringify(nextStore, null, 2), "utf8");
+  }
+
+  return {
+    getCustomGames() {
+      return readStore().customGames;
+    },
+
+    getControllerSettings() {
+      return readStore().controllerSettings;
+    },
+
+    getAppSettings() {
+      return readStore().appSettings;
+    },
+
+    updateAppSettings(settings) {
+      const current = readStore();
+      const appSettings = normalizeAppSettings(settings);
+      writeStore({
+        ...current,
+        appSettings
+      });
+      return appSettings;
+    },
+
+    updateControllerSettings(settings) {
+      const current = readStore();
+      const controllerSettings = normalizeControllerSettings(settings);
+      writeStore({
+        ...current,
+        controllerSettings
+      });
+      return controllerSettings;
+    },
+
+    upsertCustomGame(game) {
+      const current = readStore();
+      const customGames = current.customGames.filter((entry) => entry.id !== game.id);
+      const nextGame = {
+        ...game,
+        source: "Custom",
+        custom: true
+      };
+
+      customGames.push(nextGame);
+      customGames.sort((a, b) => a.title.localeCompare(b.title));
+      writeStore({ ...current, customGames });
+      return nextGame;
+    },
+
+    removeCustomGame(gameId) {
+      const current = readStore();
+      const customGames = current.customGames.filter((entry) => entry.id !== gameId);
+      writeStore({ ...current, customGames });
+      return customGames;
+    }
+  };
+}
+
+function normalizeAppSettings(settings = {}) {
+  const startView = ["home", "library", "settings"].includes(settings.startView)
+    ? settings.startView
+    : DEFAULT_APP_SETTINGS.startView;
+
+  return {
+    audioOutputId: normalizeString(settings.audioOutputId, DEFAULT_APP_SETTINGS.audioOutputId, 180),
+    audioOutputLabel: normalizeString(settings.audioOutputLabel, DEFAULT_APP_SETTINGS.audioOutputLabel, 180),
+    startView,
+    rescanOnStart: normalizeBoolean(settings.rescanOnStart, DEFAULT_APP_SETTINGS.rescanOnStart),
+    reduceMotion: normalizeBoolean(settings.reduceMotion, DEFAULT_APP_SETTINGS.reduceMotion),
+    showHiddenLaunchers: normalizeBoolean(settings.showHiddenLaunchers, DEFAULT_APP_SETTINGS.showHiddenLaunchers)
+  };
+}
+
+function normalizeControllerSettings(settings = {}) {
+  const mappings = {};
+  const inputMappings = settings && typeof settings === "object" ? settings.mappings || {} : {};
+
+  for (const [action, defaults] of Object.entries(DEFAULT_CONTROLLER_SETTINGS.mappings)) {
+    const input = inputMappings[action] || {};
+    mappings[action] = {
+      label: defaults.label,
+      buttons: normalizeButtons(input.buttons, defaults.buttons)
+    };
+  }
+
+  return {
+    deadzone: normalizeNumber(settings.deadzone, DEFAULT_CONTROLLER_SETTINGS.deadzone, 0.1, 0.95),
+    repeatDelay: normalizeNumber(settings.repeatDelay, DEFAULT_CONTROLLER_SETTINGS.repeatDelay, 90, 500),
+    mappings
+  };
+}
+
+function normalizeBoolean(value, fallback) {
+  if (typeof value === "boolean") {
+    return value;
+  }
+  return fallback;
+}
+
+function normalizeString(value, fallback, maxLength) {
+  if (typeof value !== "string") {
+    return fallback;
+  }
+  const text = value.trim();
+  return text ? text.slice(0, maxLength) : fallback;
+}
+
+function normalizeButtons(value, fallback) {
+  if (!Array.isArray(value)) {
+    return fallback;
+  }
+
+  const buttons = value
+    .map((item) => Number(item))
+    .filter((item) => Number.isInteger(item) && item >= 0 && item <= 31);
+
+  return buttons.length ? Array.from(new Set(buttons)) : fallback;
+}
+
+function normalizeNumber(value, fallback, min, max) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) {
+    return fallback;
+  }
+  return Math.min(max, Math.max(min, number));
+}
+
+function ensureDirectory(directoryPath) {
+  fs.mkdirSync(directoryPath, { recursive: true });
+}
+
+module.exports = {
+  createStore,
+  DEFAULT_APP_SETTINGS,
+  DEFAULT_CONTROLLER_SETTINGS
+};

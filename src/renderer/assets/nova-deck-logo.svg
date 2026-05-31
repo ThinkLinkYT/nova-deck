@@ -1,0 +1,19 @@
+<svg width="512" height="512" viewBox="0 0 512 512" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <rect width="512" height="512" rx="104" fill="#080A0F"/>
+  <rect x="64" y="64" width="384" height="384" rx="84" fill="#11141A" stroke="#27313D" stroke-width="10"/>
+  <path d="M153 310C160.7 259.2 204.5 221 256 221C307.5 221 351.3 259.2 359 310L365 350C371.7 394.4 319.1 422.8 285.8 392.6L256 365.5L226.2 392.6C192.9 422.8 140.3 394.4 147 350L153 310Z" fill="#202630"/>
+  <path d="M154 308C181.4 291.3 215.4 282 256 282C296.6 282 330.6 291.3 358 308" stroke="#6BD6FF" stroke-width="18" stroke-linecap="round"/>
+  <path d="M206 318H246M226 298V338" stroke="#F8FAFC" stroke-width="16" stroke-linecap="round"/>
+  <circle cx="295" cy="315" r="12" fill="#F8FAFC"/>
+  <circle cx="325" cy="339" r="12" fill="#F8FAFC"/>
+  <path d="M180 160H226L286 252V160H332V352H286L226 260V352H180V160Z" fill="#080A0F"/>
+  <path d="M198 176H224L288 275V176H314V336H288L224 238V336H198V176Z" fill="url(#novaGradient)"/>
+  <path d="M176 138C196 124.7 222.7 118 256 118C289.3 118 316 124.7 336 138" stroke="#F2C14E" stroke-width="16" stroke-linecap="round"/>
+  <defs>
+    <linearGradient id="novaGradient" x1="198" y1="176" x2="314" y2="336" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#F2C14E"/>
+      <stop offset="0.5" stop-color="#74D680"/>
+      <stop offset="1" stop-color="#6BD6FF"/>
+    </linearGradient>
+  </defs>
+</svg>

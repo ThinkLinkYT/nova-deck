@@ -1,0 +1,159 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data: file:; connect-src 'none'; object-src 'none'; base-uri 'self';">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Nova Deck</title>
+    <link rel="stylesheet" href="./styles.css">
+  </head>
+  <body>
+    <main class="shell">
+      <aside class="rail" aria-label="Main navigation">
+        <button class="rail-button active" data-view="home" title="Home" aria-label="Home">
+          <svg class="icon" viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M3 10.8 12 3l9 7.8"/>
+            <path d="M5.5 9.6V21h13V9.6"/>
+            <path d="M9.5 21v-6h5v6"/>
+          </svg>
+        </button>
+        <button class="rail-button" data-view="library" title="Library" aria-label="Library">
+          <svg class="icon" viewBox="0 0 24 24" aria-hidden="true">
+            <rect x="3" y="3" width="7" height="7" rx="1.5"/>
+            <rect x="14" y="3" width="7" height="7" rx="1.5"/>
+            <rect x="3" y="14" width="7" height="7" rx="1.5"/>
+            <rect x="14" y="14" width="7" height="7" rx="1.5"/>
+          </svg>
+        </button>
+        <button class="rail-button" data-view="settings" title="Settings" aria-label="Settings">
+          <svg class="icon" viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M4 7h5"/>
+            <path d="M15 7h5"/>
+            <circle cx="12" cy="7" r="2.3"/>
+            <path d="M4 17h9"/>
+            <path d="M19 17h1"/>
+            <circle cx="16" cy="17" r="2.3"/>
+          </svg>
+        </button>
+      </aside>
+
+      <section class="deck">
+        <header class="topbar">
+          <div class="brand-block">
+            <img class="brand-logo" src="./assets/nova-deck-logo.svg" alt="" aria-hidden="true">
+            <div>
+              <h1>Nova Deck</h1>
+              <p id="systemLine">Local Shell</p>
+            </div>
+          </div>
+
+          <div class="top-actions">
+            <label class="search-wrap" for="searchInput">
+              <svg class="icon" viewBox="0 0 24 24" aria-hidden="true">
+                <circle cx="11" cy="11" r="7"/>
+                <path d="m16.5 16.5 4 4"/>
+              </svg>
+              <input id="searchInput" type="search" placeholder="Search library" autocomplete="off">
+            </label>
+            <button id="scanButton" class="ghost-button" title="Scan library" aria-label="Scan library">
+              <svg class="icon" viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M20 12a8 8 0 0 1-13.7 5.7"/>
+                <path d="M4 12A8 8 0 0 1 17.7 6.3"/>
+                <path d="M7 18H4v3"/>
+                <path d="M17 6h3V3"/>
+              </svg>
+            </button>
+            <button id="addButton" class="ghost-button" title="Add game" aria-label="Add game">
+              <svg class="icon" viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M12 5v14"/>
+                <path d="M5 12h14"/>
+              </svg>
+            </button>
+            <button id="fullscreenButton" class="ghost-button fullscreen-toggle" title="Fullscreen" aria-label="Fullscreen">
+              <svg class="icon fullscreen-enter-icon" viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M8 3H3v5"/>
+                <path d="M16 3h5v5"/>
+                <path d="M21 16v5h-5"/>
+                <path d="M3 16v5h5"/>
+              </svg>
+              <svg class="icon fullscreen-exit-icon" viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M9 3v6H3"/>
+                <path d="M15 3v6h6"/>
+                <path d="M21 15h-6v6"/>
+                <path d="M3 15h6v6"/>
+              </svg>
+            </button>
+          </div>
+        </header>
+
+        <section class="hero" id="heroPanel">
+          <div class="hero-copy">
+            <p id="heroSource" class="source-pill">Library</p>
+            <h2 id="heroTitle">Scanning...</h2>
+            <p id="heroPath" class="hero-path">Checking local launchers and custom entries.</p>
+          </div>
+          <div class="hero-actions">
+            <button id="launchButton" class="launch-button">
+              <svg class="icon" viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M8 5v14l11-7Z"/>
+              </svg>
+              <span>Launch</span>
+            </button>
+            <button id="removeButton" class="subtle-button hidden">
+              <svg class="icon" viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M4 7h16"/>
+                <path d="M10 11v6"/>
+                <path d="M14 11v6"/>
+                <path d="M6 7l1 14h10l1-14"/>
+                <path d="M9 7V4h6v3"/>
+              </svg>
+              <span>Remove</span>
+            </button>
+          </div>
+          <div class="hero-signal" aria-hidden="true">
+            <div class="signal-line strong"></div>
+            <div class="signal-line"></div>
+            <div class="signal-line short"></div>
+          </div>
+        </section>
+
+        <section class="content-grid">
+          <section class="panel main-panel">
+            <div class="panel-head">
+              <h3 id="viewTitle">Library</h3>
+              <p id="libraryCount">0 games</p>
+            </div>
+            <div id="gameGrid" class="game-grid" tabindex="0" aria-label="Games"></div>
+          </section>
+
+          <aside class="panel side-panel">
+            <div class="panel-head">
+              <h3>Status</h3>
+              <p id="clockText">--:--</p>
+            </div>
+            <div class="status-list">
+              <div class="status-row">
+                <span>Controller</span>
+                <strong id="controllerStatus">Disconnected</strong>
+              </div>
+              <div class="status-row">
+                <span>Launcher Mode</span>
+                <strong>Quiet</strong>
+              </div>
+              <div class="status-row">
+                <span>Source</span>
+                <strong id="sourceStatus">Local</strong>
+              </div>
+            </div>
+            <div class="activity-card">
+              <p id="activityText">Ready.</p>
+            </div>
+          </aside>
+        </section>
+      </section>
+    </main>
+
+    <div id="toast" class="toast hidden" role="status"></div>
+    <script src="./app.js"></script>
+  </body>
+</html>
