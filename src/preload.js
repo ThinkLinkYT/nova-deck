@@ -14,6 +14,12 @@ contextBridge.exposeInMainWorld("nova", {
   getUpdateStatus: () => ipcRenderer.invoke("updates:get-status"),
   checkForUpdates: () => ipcRenderer.invoke("updates:check"),
   installUpdate: () => ipcRenderer.invoke("updates:install"),
+  getGamePreferences: (game) => ipcRenderer.invoke("game:get-preferences", game),
+  updateGamePreference: (game, update) => ipcRenderer.invoke("game:update-preference", game, update),
+  sendVirtualInput: (events) => ipcRenderer.invoke("input:send", events),
+  setInputBridgeProfile: (profile) => ipcRenderer.invoke("input:set-profile", profile),
+  clearInputBridgeProfile: () => ipcRenderer.invoke("input:clear-profile"),
+  stopVirtualInput: () => ipcRenderer.invoke("input:stop"),
   onUpdateStatus: (callback) => {
     const listener = (_event, status) => callback(status);
     ipcRenderer.on("updates:status", listener);

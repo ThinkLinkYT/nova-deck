@@ -5,6 +5,14 @@ const { scanGames, gameFromFile } = require("./scanner");
 const { launchGame } = require("./launcher");
 const { createStore } = require("./storage");
 const { enrichGamesWithArtwork } = require("./icon-cache");
+const { getGamePreferences, updateGamePreference } = require("./game-preferences");
+const {
+  setupInputBridge,
+  sendVirtualInput,
+  setInputBridgeProfile,
+  clearInputBridgeProfile,
+  stopInputBridge
+} = require("./input-bridge");
 const { setupUpdater, getUpdateStatus, checkForUpdates, installUpdate } = require("./updater");
 
 let mainWindow;
@@ -23,7 +31,8 @@ function createWindow() {
     webPreferences: {
       preload: path.join(__dirname, "preload.js"),
       contextIsolation: true,
-      nodeIntegration: false
+      nodeIntegration: false,
+      backgroundThrottling: false
     }
   });
 
@@ -43,6 +52,7 @@ app.whenReady().then(() => {
   app.setAppUserModelId("local.nova.deck");
   store = createStore(app.getPath("userData"));
   createWindow();
+  setupInputBridge({ app });
   setupUpdater({
     app,
     getMainWindow: () => mainWindow
@@ -59,6 +69,10 @@ app.on("window-all-closed", () => {
   if (process.platform !== "darwin") {
     app.quit();
   }
+});
+
+app.on("before-quit", () => {
+  stopInputBridge();
 });
 
 ipcMain.handle("library:scan", async () => {
@@ -132,6 +146,34 @@ ipcMain.handle("updates:check", () => {
 
 ipcMain.handle("updates:install", () => {
   return installUpdate();
+});
+
+ipcMain.handle("game:get-preferences", (_event, game) => {
+  return getGamePreferences(game, store.getGamePreferenceSettings(game && game.id));
+});
+
+ipcMain.handle("game:update-preference", (_event, game, update) => {
+  const result = updateGamePreference(game, update, store.getGamePreferenceSettings(game && game.id));
+  if (result.settings) {
+    store.updateGamePreferenceSettings(game && game.id, result.settings);
+  }
+  return result.preferences;
+});
+
+ipcMain.handle("input:send", (_event, events) => {
+  return sendVirtualInput(events);
+});
+
+ipcMain.handle("input:set-profile", (_event, profile) => {
+  return setInputBridgeProfile(profile);
+});
+
+ipcMain.handle("input:clear-profile", () => {
+  return clearInputBridgeProfile();
+});
+
+ipcMain.handle("input:stop", () => {
+  return stopInputBridge();
 });
 
 ipcMain.handle("game:launch", async (_event, game) => {

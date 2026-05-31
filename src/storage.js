@@ -36,7 +36,8 @@ function createStore(userDataPath) {
         return {
           customGames: [],
           controllerSettings: normalizeControllerSettings(),
-          appSettings: normalizeAppSettings()
+          appSettings: normalizeAppSettings(),
+          gamePreferences: {}
         };
       }
 
@@ -44,13 +45,15 @@ function createStore(userDataPath) {
       return {
         customGames: Array.isArray(parsed.customGames) ? parsed.customGames : [],
         controllerSettings: normalizeControllerSettings(parsed.controllerSettings),
-        appSettings: normalizeAppSettings(parsed.appSettings)
+        appSettings: normalizeAppSettings(parsed.appSettings),
+        gamePreferences: normalizeGamePreferences(parsed.gamePreferences)
       };
     } catch {
       return {
         customGames: [],
         controllerSettings: normalizeControllerSettings(),
-        appSettings: normalizeAppSettings()
+        appSettings: normalizeAppSettings(),
+        gamePreferences: {}
       };
     }
   }
@@ -72,6 +75,10 @@ function createStore(userDataPath) {
       return readStore().appSettings;
     },
 
+    getGamePreferenceSettings(gameId) {
+      return readStore().gamePreferences[normalizePreferenceId(gameId)] || {};
+    },
+
     updateAppSettings(settings) {
       const current = readStore();
       const appSettings = normalizeAppSettings(settings);
@@ -90,6 +97,25 @@ function createStore(userDataPath) {
         controllerSettings
       });
       return controllerSettings;
+    },
+
+    updateGamePreferenceSettings(gameId, settings) {
+      const current = readStore();
+      const preferenceId = normalizePreferenceId(gameId);
+      if (!preferenceId) {
+        return {};
+      }
+
+      const gamePreferences = {
+        ...current.gamePreferences,
+        [preferenceId]: normalizeStoredPreferenceSettings(settings)
+      };
+
+      writeStore({
+        ...current,
+        gamePreferences
+      });
+      return gamePreferences[preferenceId];
     },
 
     upsertCustomGame(game) {
@@ -148,6 +174,26 @@ function normalizeControllerSettings(settings = {}) {
     repeatDelay: normalizeNumber(settings.repeatDelay, DEFAULT_CONTROLLER_SETTINGS.repeatDelay, 90, 500),
     mappings
   };
+}
+
+function normalizeGamePreferences(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return {};
+  }
+
+  return Object.fromEntries(
+    Object.entries(value)
+      .map(([key, settings]) => [normalizePreferenceId(key), normalizeStoredPreferenceSettings(settings)])
+      .filter(([key]) => Boolean(key))
+  );
+}
+
+function normalizeStoredPreferenceSettings(settings) {
+  return settings && typeof settings === "object" && !Array.isArray(settings) ? settings : {};
+}
+
+function normalizePreferenceId(value) {
+  return typeof value === "string" ? value.trim().slice(0, 180) : "";
 }
 
 function normalizeBoolean(value, fallback) {

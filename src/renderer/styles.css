@@ -670,6 +670,186 @@ div.source-summary {
     rgba(255, 255, 255, 0.04);
 }
 
+.app-preferences-panel {
+  display: grid;
+  gap: 16px;
+  padding: 16px;
+  border: 1px solid rgba(107, 214, 255, 0.2);
+  border-radius: 8px;
+  background: rgba(8, 12, 18, 0.74);
+}
+
+.app-preferences-head {
+  display: flex;
+  align-items: start;
+  justify-content: space-between;
+  gap: 18px;
+}
+
+.app-preferences-head p {
+  color: var(--cyan);
+  font-size: 12px;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.app-preferences-head strong {
+  display: block;
+  margin-top: 5px;
+  font-size: 22px;
+}
+
+.app-preferences-head span {
+  display: block;
+  margin-top: 6px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.app-preferences-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: end;
+  gap: 10px;
+}
+
+.preference-path {
+  overflow: hidden;
+  color: var(--quiet);
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.preference-note {
+  padding: 10px 12px;
+  border: 1px solid rgba(107, 214, 255, 0.14);
+  border-radius: 6px;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.45;
+  background: rgba(107, 214, 255, 0.06);
+}
+
+.preference-sections {
+  display: grid;
+  grid-template-columns: minmax(320px, 1.35fr) minmax(220px, 0.8fr) minmax(240px, 0.85fr);
+  gap: 14px;
+}
+
+.preference-section {
+  display: grid;
+  align-content: start;
+  gap: 12px;
+  min-width: 0;
+}
+
+.preference-section > strong {
+  font-size: 14px;
+}
+
+.preference-control-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.preference-control,
+.preference-slider {
+  display: grid;
+  gap: 7px;
+  min-width: 0;
+}
+
+.preference-control span,
+.preference-slider span {
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 700;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pref-select {
+  min-width: 0;
+  min-height: 36px;
+  padding: 0 10px;
+  outline: 0;
+}
+
+.preference-toggle-grid {
+  display: grid;
+  gap: 9px;
+}
+
+.pref-toggle {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  min-height: 36px;
+  padding: 0 10px;
+  font-weight: 700;
+}
+
+.pref-toggle span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pref-toggle b {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.pref-toggle.enabled {
+  border-color: rgba(116, 214, 128, 0.42);
+  background: rgba(116, 214, 128, 0.11);
+}
+
+.pref-toggle.enabled b {
+  color: var(--green);
+}
+
+.preference-slider-list {
+  display: grid;
+  gap: 13px;
+}
+
+.preference-slider {
+  grid-template-columns: minmax(0, 1fr) 58px;
+  align-items: center;
+}
+
+.preference-slider span {
+  grid-column: 1 / -1;
+}
+
+.pref-range {
+  min-width: 0;
+}
+
+.preference-slider output {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 800;
+  text-align: right;
+}
+
+.preference-empty {
+  display: grid;
+  gap: 7px;
+  min-height: 82px;
+  align-content: center;
+  color: var(--muted);
+}
+
+.preference-empty strong {
+  color: var(--text);
+}
+
 .apps-grid-inner {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(138px, 1fr));
@@ -1263,6 +1443,19 @@ input.controller-focused {
   }
 
   .apps-feature-actions {
+    grid-template-columns: 1fr;
+  }
+
+  .app-preferences-head {
+    display: grid;
+  }
+
+  .app-preferences-actions {
+    justify-content: start;
+  }
+
+  .preference-sections,
+  .preference-control-grid {
     grid-template-columns: 1fr;
   }
 }

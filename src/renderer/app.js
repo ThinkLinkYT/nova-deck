@@ -33,6 +33,30 @@ const CONTROLLER_BUTTON_NAMES = {
   16: "Guide"
 };
 
+const VIRTUAL_KEY_CODES = {
+  "key:W": 0x57,
+  "key:A": 0x41,
+  "key:S": 0x53,
+  "key:D": 0x44,
+  "key:Space": 0x20,
+  "key:Shift": 0x10,
+  "key:Control": 0x11,
+  "key:E": 0x45,
+  "key:Q": 0x51,
+  "key:F3": 0x72,
+  "key:F5": 0x74,
+  "key:Escape": 0x1b,
+  "key:1": 0x31,
+  "key:2": 0x32,
+  "key:3": 0x33,
+  "key:4": 0x34,
+  "key:5": 0x35,
+  "key:6": 0x36,
+  "key:7": 0x37,
+  "key:8": 0x38,
+  "key:9": 0x39
+};
+
 const DEFAULT_APP_SETTINGS = {
   audioOutputId: "default",
   audioOutputLabel: "System default",
@@ -65,11 +89,21 @@ const state = {
     transferredBytes: 0,
     totalBytes: 0
   },
+  appPreferences: null,
+  javaBridgeProfile: null,
+  javaBridgeNativeActive: false,
+  javaBridgeHeldInputs: new Map(),
+  javaBridgeButtonStates: new Map(),
+  javaBridgeLookX: 0,
+  javaBridgeLookY: 0,
+  javaBridgeMouseCarryX: 0,
+  javaBridgeMouseCarryY: 0,
   mappingCaptureAction: "",
   capturePrimedButtons: new Set(),
   captureStartedAt: 0,
   controllerSaveTimer: null,
   appSettingsSaveTimer: null,
+  gamePreferenceSaveTimer: null,
   isFullscreen: false,
   meta: null,
   lastButtons: new Map(),
@@ -160,7 +194,14 @@ function bindEvents() {
   });
   window.addEventListener("gamepaddisconnected", () => {
     state.controllerName = "";
+    releaseJavaBridgeInputs();
     renderController();
+  });
+  window.addEventListener("beforeunload", () => {
+    releaseJavaBridgeInputs();
+    if (api.clearInputBridgeProfile) {
+      api.clearInputBridgeProfile();
+    }
   });
 
   api.onFullscreenChanged((isFullscreen) => {
@@ -295,6 +336,7 @@ async function launchSelectedGame() {
 
   elements.launchButton.disabled = true;
   elements.activityText.textContent = `Launching ${game.title}...`;
+  await loadGameBridgeProfile(game);
   const result = await api.launchGame(game);
   elements.launchButton.disabled = false;
 
@@ -469,12 +511,17 @@ function renderLibrary() {
   elements.gameGrid.innerHTML = `
     <div class="apps-screen">
       ${renderSelectedAppPanel(selectedGame)}
+      ${renderAppPreferencesPanel(selectedGame)}
       <div class="apps-grid-inner">
         ${state.filteredGames.map((game, index) => renderGameCard(game, index)).join("")}
       </div>
     </div>
   `;
-  scrollSelectedIntoView();
+  if (state.appPreferences && state.appPreferences.gameId === selectedGame.id) {
+    scrollPreferencesIntoView();
+  } else {
+    scrollSelectedIntoView();
+  }
 }
 
 function renderSelectedAppPanel(game) {
@@ -497,10 +544,139 @@ function renderSelectedAppPanel(game) {
         </button>
         <button class="app-action-card preferences-card" data-action="app-preferences">
           <span>Preferences</span>
-          <strong>Coming soon</strong>
+          <strong>Per-app settings</strong>
         </button>
       </div>
     </section>
+  `;
+}
+
+function renderAppPreferencesPanel(game) {
+  const preferences = state.appPreferences;
+  if (!preferences || !game || preferences.gameId !== game.id) {
+    return "";
+  }
+
+  if (preferences.loading) {
+    return `
+      <section class="app-preferences-panel">
+        <div class="app-preferences-head">
+          <div>
+            <p>Preferences</p>
+            <strong>${escapeHtml(game.title)}</strong>
+          </div>
+          <button class="settings-action compact" data-action="close-app-preferences">Close</button>
+        </div>
+        <div class="preference-empty">Loading preferences...</div>
+      </section>
+    `;
+  }
+
+  const data = preferences.data || {};
+  if (!data.supported) {
+    return `
+      <section class="app-preferences-panel">
+        <div class="app-preferences-head">
+          <div>
+            <p>Preferences</p>
+            <strong>${escapeHtml(game.title)}</strong>
+          </div>
+          <button class="settings-action compact" data-action="close-app-preferences">Close</button>
+        </div>
+        <div class="preference-empty">${escapeHtml(data.message || "No preference editor is available for this app yet.")}</div>
+      </section>
+    `;
+  }
+
+  if (data.status !== "ready") {
+    return `
+      <section class="app-preferences-panel">
+        <div class="app-preferences-head">
+          <div>
+            <p>${escapeHtml(data.title || "Preferences")}</p>
+            <strong>Controls</strong>
+          </div>
+          <button class="settings-action compact" data-action="close-app-preferences">Close</button>
+        </div>
+        <div class="preference-empty">
+          <strong>${escapeHtml(data.message || "Settings file not found.")}</strong>
+          <span>Open Minecraft for Windows, change one setting, close it, then return here.</span>
+        </div>
+      </section>
+    `;
+  }
+
+  const preferencePath = data.optionsPath || "";
+  const folderPath = data.folderPath || data.optionsPath || "";
+  return `
+    <section class="app-preferences-panel">
+      <div class="app-preferences-head">
+        <div>
+          <p>${escapeHtml(data.title || "Minecraft for Windows")}</p>
+          <strong>Controller Preferences</strong>
+          <span>${escapeHtml(data.profileName || "Local profile")}</span>
+        </div>
+        <div class="app-preferences-actions">
+          ${folderPath ? `<button class="settings-action compact" data-action="open-preferences-path" data-path="${escapeHtml(folderPath)}">Open folder</button>` : ""}
+          <button class="settings-action compact" data-action="close-app-preferences">Close</button>
+        </div>
+      </div>
+      ${data.message ? `<div class="preference-note">${escapeHtml(data.message)}</div>` : ""}
+      ${preferencePath ? `<div class="preference-path">${escapeHtml(preferencePath)}</div>` : ""}
+      <div class="preference-sections">
+        <div class="preference-section">
+          <strong>${escapeHtml(data.controlTitle || "Gamepad Buttons")}</strong>
+          <div class="preference-control-grid">
+            ${(data.controls || []).map(renderPreferenceControl).join("")}
+          </div>
+        </div>
+        <div class="preference-section compact">
+          <strong>${escapeHtml(data.toggleTitle || "Gamepad Toggles")}</strong>
+          <div class="preference-toggle-grid">
+            ${(data.toggles || []).map(renderPreferenceToggle).join("")}
+          </div>
+        </div>
+        <div class="preference-section compact">
+          <strong>${escapeHtml(data.sliderTitle || "Feel")}</strong>
+          <div class="preference-slider-list">
+            ${(data.sliders || []).map(renderPreferenceSlider).join("")}
+          </div>
+        </div>
+      </div>
+    </section>
+  `;
+}
+
+function renderPreferenceControl(control) {
+  return `
+    <label class="preference-control">
+      <span>${escapeHtml(control.label)}</span>
+      <select class="pref-select" data-pref-key="${escapeHtml(control.key)}">
+        ${(control.options || []).map((option) => (
+          `<option value="${escapeHtml(option.value)}"${String(option.value) === String(control.value) ? " selected" : ""}>${escapeHtml(option.label)}</option>`
+        )).join("")}
+      </select>
+    </label>
+  `;
+}
+
+function renderPreferenceToggle(toggle) {
+  return `
+    <button class="pref-toggle${toggle.enabled ? " enabled" : ""}" data-action="toggle-game-preference" data-pref-key="${escapeHtml(toggle.key)}" data-next-value="${toggle.enabled ? "0" : "1"}" aria-pressed="${toggle.enabled ? "true" : "false"}">
+      <span>${escapeHtml(toggle.label)}</span>
+      <b>${toggle.enabled ? "On" : "Off"}</b>
+    </button>
+  `;
+}
+
+function renderPreferenceSlider(slider) {
+  const percent = Math.round(Number(slider.value || 0) * 100);
+  return `
+    <label class="preference-slider">
+      <span>${escapeHtml(slider.label)}</span>
+      <input class="pref-range" type="range" min="${escapeHtml(slider.min)}" max="${escapeHtml(slider.max)}" step="${escapeHtml(slider.step)}" value="${escapeHtml(slider.value)}" data-pref-key="${escapeHtml(slider.key)}">
+      <output data-pref-output="${escapeHtml(slider.key)}">${percent}%</output>
+    </label>
   `;
 }
 
@@ -743,6 +919,10 @@ function handleContentClick(event) {
   const card = event.target.closest(".game-card");
   if (card) {
     state.selectedIndex = Number(card.dataset.index);
+    const selectedGame = getSelectedGame();
+    if (state.appPreferences && selectedGame && state.appPreferences.gameId !== selectedGame.id) {
+      state.appPreferences = null;
+    }
     render();
     return;
   }
@@ -788,11 +968,28 @@ function handleContentClick(event) {
   } else if (action === "play-selected") {
     launchSelectedGame();
   } else if (action === "app-preferences") {
-    showAppPreferencesPlaceholder();
+    openAppPreferences();
+  } else if (action === "close-app-preferences") {
+    closeAppPreferences();
+  } else if (action === "open-preferences-path") {
+    api.openPath(actionButton.dataset.path || "");
+  } else if (action === "toggle-game-preference") {
+    updateSelectedGamePreference(actionButton.dataset.prefKey, actionButton.dataset.nextValue);
   }
 }
 
 function handleContentInput(event) {
+  const preferenceRange = event.target.closest("[data-pref-key].pref-range");
+  if (preferenceRange) {
+    const key = preferenceRange.dataset.prefKey;
+    updatePreferenceOutput(key, preferenceRange.value);
+    if (key && key.startsWith("java_bridge.")) {
+      previewJavaBridgePreference(key, preferenceRange.value);
+      saveGamePreferenceSoon(key, preferenceRange.value);
+    }
+    return;
+  }
+
   const target = event.target.closest("[data-controller-setting]");
   if (!target) {
     return;
@@ -830,6 +1027,12 @@ function handleContentChange(event) {
       audioOutputId: selectedOutput.deviceId,
       audioOutputLabel: selectedOutput.label
     });
+    return;
+  }
+
+  const preferenceInput = event.target.closest("[data-pref-key]");
+  if (preferenceInput) {
+    updateSelectedGamePreference(preferenceInput.dataset.prefKey, preferenceInput.value);
   }
 }
 
@@ -915,17 +1118,23 @@ function startGamepadLoop() {
 
 function pollGamepad() {
   if (!navigator.getGamepads) {
+    releaseJavaBridgeInputs();
     return;
   }
 
   const gamepad = Array.from(navigator.getGamepads()).filter(Boolean)[0];
   if (!gamepad) {
+    releaseJavaBridgeInputs();
     return;
   }
 
   state.controllerName = gamepad.id;
   const now = performance.now();
   if (handleMappingCapture(gamepad)) {
+    return;
+  }
+
+  if (pollJavaInputBridge(gamepad)) {
     return;
   }
 
@@ -1013,6 +1222,231 @@ function readAxis(gamepad, indexes) {
   }, 0);
 }
 
+function pollJavaInputBridge(gamepad) {
+  const profile = getActiveJavaBridgeProfile();
+  if (!profile || !profile.bridge || !profile.bridge.enabled || document.hasFocus()) {
+    releaseJavaBridgeInputs();
+    return false;
+  }
+
+  if (state.javaBridgeNativeActive && isLikelyXInputGamepad(gamepad)) {
+    releaseJavaBridgeInputs();
+    return true;
+  }
+
+  const bridge = profile.bridge;
+  const deadzone = clampNumber(bridge.deadzone, 0.24, 0.1, 0.7);
+  const lookSensitivity = clampNumber(bridge.lookSensitivity, 1, 0.2, 3);
+  const events = [];
+
+  const moveX = applyBridgeDeadzone(readAxis(gamepad, [0]), deadzone);
+  const moveY = applyBridgeDeadzone(readAxis(gamepad, [1]), deadzone);
+  setHeldVirtualInput("java:move-forward", moveY < 0, keyEvent("key:W", true), keyEvent("key:W", false), events);
+  setHeldVirtualInput("java:move-back", moveY > 0, keyEvent("key:S", true), keyEvent("key:S", false), events);
+  setHeldVirtualInput("java:move-left", moveX < 0, keyEvent("key:A", true), keyEvent("key:A", false), events);
+  setHeldVirtualInput("java:move-right", moveX > 0, keyEvent("key:D", true), keyEvent("key:D", false), events);
+
+  const lookX = applyBridgeLookCurve(applyScaledBridgeDeadzone(readAxis(gamepad, [2]), deadzone));
+  const lookY = applyBridgeLookCurve(applyScaledBridgeDeadzone(readAxis(gamepad, [3]), deadzone));
+  state.javaBridgeLookX += (lookX - state.javaBridgeLookX) * 0.38;
+  state.javaBridgeLookY += (lookY - state.javaBridgeLookY) * 0.38;
+  if (Math.abs(state.javaBridgeLookX) < 0.003) {
+    state.javaBridgeLookX = 0;
+  }
+  if (Math.abs(state.javaBridgeLookY) < 0.003) {
+    state.javaBridgeLookY = 0;
+  }
+
+  state.javaBridgeMouseCarryX += state.javaBridgeLookX * 22 * lookSensitivity;
+  state.javaBridgeMouseCarryY += state.javaBridgeLookY * 22 * lookSensitivity;
+  const dx = Math.trunc(state.javaBridgeMouseCarryX);
+  const dy = Math.trunc(state.javaBridgeMouseCarryY);
+  if (dx) {
+    state.javaBridgeMouseCarryX -= dx;
+  }
+  if (dy) {
+    state.javaBridgeMouseCarryY -= dy;
+  }
+  if (dx || dy) {
+    events.push({ type: "mouseMove", dx, dy });
+  }
+
+  for (const control of profile.controls || []) {
+    const pressed = isPressed(gamepad, control.buttonIndex);
+    const wasPressed = state.javaBridgeButtonStates.get(control.key) || false;
+    if (pressed && !wasPressed) {
+      pressVirtualOutput(control.key, control.value, events);
+    } else if (!pressed && wasPressed) {
+      releaseVirtualOutput(control.key, control.value, events);
+    }
+    state.javaBridgeButtonStates.set(control.key, pressed);
+  }
+
+  sendJavaBridgeEvents(events);
+  return true;
+}
+
+function getActiveJavaBridgeProfile() {
+  const game = getSelectedGame();
+  if (!game || !state.javaBridgeProfile || state.javaBridgeProfile.gameId !== game.id) {
+    return null;
+  }
+
+  const data = state.javaBridgeProfile.data;
+  return data && data.kind === "minecraft-java-bridge" && data.status === "ready" ? data : null;
+}
+
+function isLikelyXInputGamepad(gamepad) {
+  const id = String(gamepad && gamepad.id || "").toLowerCase();
+  return id.includes("xinput")
+    || id.includes("xbox")
+    || id.includes("x-box")
+    || id.includes("x box")
+    || id.includes("360 controller")
+    || id.includes("microsoft");
+}
+
+function setJavaBridgeProfile(game, data) {
+  if (!game || !data || data.kind !== "minecraft-java-bridge") {
+    return;
+  }
+
+  const wasEnabled = Boolean(state.javaBridgeProfile && state.javaBridgeProfile.data && state.javaBridgeProfile.data.bridge && state.javaBridgeProfile.data.bridge.enabled);
+  state.javaBridgeProfile = {
+    gameId: game.id,
+    data
+  };
+
+  if (wasEnabled && (!data.bridge || !data.bridge.enabled)) {
+    releaseJavaBridgeInputs();
+  }
+
+  syncNativeJavaBridge(data);
+}
+
+function syncNativeJavaBridge(data) {
+  const enabled = Boolean(data && data.bridge && data.bridge.enabled);
+  if (!enabled) {
+    state.javaBridgeNativeActive = false;
+    if (api.clearInputBridgeProfile) {
+      api.clearInputBridgeProfile().catch(() => {});
+    }
+    return;
+  }
+
+  if (!api.setInputBridgeProfile) {
+    state.javaBridgeNativeActive = false;
+    return;
+  }
+
+  api.setInputBridgeProfile(data)
+    .then((isActive) => {
+      state.javaBridgeNativeActive = Boolean(isActive);
+    })
+    .catch(() => {
+      state.javaBridgeNativeActive = false;
+    });
+}
+
+function applyBridgeDeadzone(value, deadzone) {
+  return Math.abs(value) > deadzone ? value : 0;
+}
+
+function applyScaledBridgeDeadzone(value, deadzone) {
+  const absolute = Math.abs(value);
+  if (absolute <= deadzone) {
+    return 0;
+  }
+
+  const scaled = (absolute - deadzone) / (1 - deadzone);
+  return Math.sign(value) * Math.min(1, scaled);
+}
+
+function applyBridgeLookCurve(value) {
+  return value === 0 ? 0 : Math.sign(value) * Math.abs(value) ** 1.45;
+}
+
+function pressVirtualOutput(controlKey, output, events) {
+  if (output === "none") {
+    return;
+  }
+
+  const stateKey = `java:button:${controlKey}`;
+  if (output === "mouse:left" || output === "mouse:right") {
+    const button = output === "mouse:right" ? "right" : "left";
+    setHeldVirtualInput(stateKey, true, { type: "mouseButton", button, down: true }, { type: "mouseButton", button, down: false }, events);
+    return;
+  }
+
+  if (output === "wheel:up" || output === "wheel:down") {
+    events.push({ type: "wheel", delta: output === "wheel:up" ? 120 : -120 });
+    return;
+  }
+
+  const downEvent = keyEvent(output, true);
+  const upEvent = keyEvent(output, false);
+  if (downEvent && upEvent) {
+    setHeldVirtualInput(stateKey, true, downEvent, upEvent, events);
+  }
+}
+
+function releaseVirtualOutput(controlKey, output, events) {
+  if (output === "none" || output === "wheel:up" || output === "wheel:down") {
+    return;
+  }
+
+  const stateKey = `java:button:${controlKey}`;
+  if (output === "mouse:left" || output === "mouse:right") {
+    const button = output === "mouse:right" ? "right" : "left";
+    setHeldVirtualInput(stateKey, false, { type: "mouseButton", button, down: true }, { type: "mouseButton", button, down: false }, events);
+    return;
+  }
+
+  const downEvent = keyEvent(output, true);
+  const upEvent = keyEvent(output, false);
+  if (downEvent && upEvent) {
+    setHeldVirtualInput(stateKey, false, downEvent, upEvent, events);
+  }
+}
+
+function setHeldVirtualInput(stateKey, pressed, pressEvent, releaseEvent, events) {
+  const isHeld = state.javaBridgeHeldInputs.has(stateKey);
+  if (pressed && !isHeld) {
+    state.javaBridgeHeldInputs.set(stateKey, releaseEvent);
+    events.push(pressEvent);
+  } else if (!pressed && isHeld) {
+    state.javaBridgeHeldInputs.delete(stateKey);
+    events.push(releaseEvent);
+  }
+}
+
+function keyEvent(key, down) {
+  const vk = VIRTUAL_KEY_CODES[key];
+  return vk ? { type: "key", vk, down } : null;
+}
+
+function sendJavaBridgeEvents(events) {
+  if (events.length === 0 || !api.sendVirtualInput) {
+    return;
+  }
+
+  api.sendVirtualInput(events).catch(() => {});
+}
+
+function releaseJavaBridgeInputs() {
+  const events = Array.from(state.javaBridgeHeldInputs.values());
+  state.javaBridgeHeldInputs.clear();
+  state.javaBridgeButtonStates.clear();
+  state.javaBridgeLookX = 0;
+  state.javaBridgeLookY = 0;
+  state.javaBridgeMouseCarryX = 0;
+  state.javaBridgeMouseCarryY = 0;
+
+  if (events.length > 0) {
+    sendJavaBridgeEvents(events);
+  }
+}
+
 function moveControllerFocus(direction) {
   let current = getControllerFocusedElement();
   if (!current) {
@@ -1023,7 +1457,7 @@ function moveControllerFocus(direction) {
     setControllerFocus(current);
   }
 
-  if (current && current.matches("[data-controller-setting]") && (direction === "left" || direction === "right")) {
+  if (current && current.matches("[data-controller-setting], .pref-range") && (direction === "left" || direction === "right")) {
     adjustRangeInput(current, direction === "right" ? 1 : -1);
     return;
   }
@@ -1069,7 +1503,7 @@ function activateControllerFocus() {
     return;
   }
 
-  if (focused.matches("[data-controller-setting]")) {
+  if (focused.matches("[data-controller-setting], .pref-range")) {
     adjustRangeInput(focused, 1);
     return;
   }
@@ -1191,6 +1625,9 @@ function getFocusableControls() {
     ".filter-chip",
     ".game-card",
     ".app-action-card",
+    ".pref-select",
+    ".pref-toggle",
+    ".pref-range",
     ".settings-action",
     ".toggle-row",
     ".settings-select",
@@ -1259,6 +1696,7 @@ function adjustRangeInput(input, direction) {
   const nextValue = clampNumber(Number(input.value) + step * direction, Number(input.value), min, max);
   input.value = String(nextValue);
   input.dispatchEvent(new Event("input", { bubbles: true }));
+  input.dispatchEvent(new Event("change", { bubbles: true }));
 }
 
 function getFocusKey(element) {
@@ -1285,6 +1723,9 @@ function getFocusKey(element) {
   }
   if (element.classList.contains("app-action-card")) {
     return `app-action:${element.dataset.action || ""}`;
+  }
+  if (element.matches("[data-pref-key]")) {
+    return `pref:${element.dataset.prefKey || ""}`;
   }
   if (element.matches("[data-action]")) {
     return `action:${element.dataset.action || ""}:${element.dataset.mapAction || ""}`;
@@ -1408,9 +1849,115 @@ async function installUpdate() {
   }
 }
 
-function showAppPreferencesPlaceholder() {
+async function openAppPreferences() {
   const game = getSelectedGame();
-  showToast(game ? `${game.title} preferences are coming next.` : "App preferences are coming next.");
+  if (!game) {
+    return;
+  }
+
+  state.appPreferences = {
+    gameId: game.id,
+    loading: true,
+    data: null
+  };
+  render();
+
+  try {
+    const data = await api.getGamePreferences(game);
+    state.appPreferences = {
+      gameId: game.id,
+      loading: false,
+      data
+    };
+    setJavaBridgeProfile(game, data);
+  } catch {
+    state.appPreferences = {
+      gameId: game.id,
+      loading: false,
+      data: {
+        supported: false,
+        message: "Preferences could not be loaded."
+      }
+    };
+  }
+
+  render();
+}
+
+async function loadGameBridgeProfile(game) {
+  if (!game) {
+    return;
+  }
+
+  try {
+    const data = await api.getGamePreferences(game);
+    setJavaBridgeProfile(game, data);
+  } catch {
+    releaseJavaBridgeInputs();
+  }
+}
+
+function closeAppPreferences() {
+  state.appPreferences = null;
+  render();
+}
+
+function previewJavaBridgePreference(key, value) {
+  const game = getSelectedGame();
+  if (!game || !state.appPreferences || !state.appPreferences.data || state.appPreferences.data.kind !== "minecraft-java-bridge") {
+    return;
+  }
+
+  const data = cloneSettings(state.appPreferences.data);
+  if (key === "java_bridge.deadzone") {
+    data.bridge.deadzone = clampNumber(value, data.bridge.deadzone, 0.1, 0.7);
+  } else if (key === "java_bridge.lookSensitivity") {
+    data.bridge.lookSensitivity = clampNumber(value, data.bridge.lookSensitivity, 0.2, 3);
+  } else {
+    return;
+  }
+
+  data.sliders = (data.sliders || []).map((slider) => (
+    slider.key === key ? { ...slider, value: Number(value) } : slider
+  ));
+  state.appPreferences.data = data;
+  setJavaBridgeProfile(game, data);
+}
+
+function saveGamePreferenceSoon(key, value) {
+  clearTimeout(state.gamePreferenceSaveTimer);
+  state.gamePreferenceSaveTimer = setTimeout(() => {
+    state.gamePreferenceSaveTimer = null;
+    updateSelectedGamePreference(key, value, { render: false, silent: true, fromTimer: true });
+  }, 90);
+}
+
+async function updateSelectedGamePreference(key, value, options = {}) {
+  const game = getSelectedGame();
+  if (!game || !state.appPreferences || !state.appPreferences.data) {
+    return;
+  }
+
+  if (!options.fromTimer) {
+    clearTimeout(state.gamePreferenceSaveTimer);
+    state.gamePreferenceSaveTimer = null;
+  }
+
+  const data = state.appPreferences.data;
+  releaseJavaBridgeInputs();
+  const nextData = await api.updateGamePreference(game, {
+    optionsPath: data.optionsPath,
+    key,
+    value
+  });
+  state.appPreferences.data = nextData;
+  setJavaBridgeProfile(game, nextData);
+  if (options.render !== false) {
+    render();
+  }
+  if (!options.silent) {
+    showToast(nextData.kind === "minecraft-java-bridge" ? "Java bridge preference saved." : "Minecraft preference saved. Restart Minecraft if it is open.");
+  }
 }
 
 function saveControllerSettingsSoon() {
@@ -1431,6 +1978,13 @@ function updateSettingOutput(setting, value) {
   const output = elements.gameGrid.querySelector(`[data-setting-output="${setting}"]`);
   if (output) {
     output.textContent = value;
+  }
+}
+
+function updatePreferenceOutput(key, value) {
+  const output = elements.gameGrid.querySelector(`[data-pref-output="${CSS.escape(key)}"]`);
+  if (output) {
+    output.textContent = `${Math.round(Number(value || 0) * 100)}%`;
   }
 }
 
@@ -1459,6 +2013,13 @@ function scrollSelectedIntoView() {
   const selected = elements.gameGrid.querySelector(".game-card.selected");
   if (selected) {
     selected.scrollIntoView({ block: "nearest", inline: "nearest" });
+  }
+}
+
+function scrollPreferencesIntoView() {
+  const panel = elements.gameGrid.querySelector(".app-preferences-panel");
+  if (panel) {
+    panel.scrollIntoView({ block: "start", inline: "nearest" });
   }
 }
 
@@ -1676,6 +2237,29 @@ function createPreviewApi() {
     canInstall: false,
     percent: 0
   });
+  let previewJavaBridge = {
+    enabled: false,
+    deadzone: 0.24,
+    lookSensitivity: 1,
+    controls: {
+      "java_bridge.button0": "key:Space",
+      "java_bridge.button1": "key:Shift",
+      "java_bridge.button2": "key:E",
+      "java_bridge.button3": "key:Q",
+      "java_bridge.button4": "wheel:up",
+      "java_bridge.button5": "wheel:down",
+      "java_bridge.button6": "mouse:right",
+      "java_bridge.button7": "mouse:left",
+      "java_bridge.button8": "key:F3",
+      "java_bridge.button9": "key:Escape",
+      "java_bridge.button10": "key:Control",
+      "java_bridge.button11": "key:F5",
+      "java_bridge.button12": "key:1",
+      "java_bridge.button13": "key:2",
+      "java_bridge.button14": "key:3",
+      "java_bridge.button15": "key:4"
+    }
+  };
   const previewGames = [
     {
       id: "preview:forza",
@@ -1697,6 +2281,28 @@ function createPreviewApi() {
       installPath: "C:\\Games\\Epic\\Hades",
       artworkUrl: "./assets/nova-deck-logo.svg",
       artworkType: "cover",
+      custom: false
+    },
+    {
+      id: "preview:minecraft-bedrock",
+      title: "Minecraft for Windows",
+      source: "Minecraft",
+      launchType: "appx",
+      launchTarget: "Microsoft.MinecraftUWP_8wekyb3d8bbwe!App",
+      installPath: "Windows Apps",
+      artworkUrl: "./assets/nova-deck-logo.svg",
+      artworkType: "icon",
+      custom: false
+    },
+    {
+      id: "preview:minecraft-java",
+      title: "Minecraft Launcher",
+      source: "Minecraft",
+      launchType: "exe",
+      launchTarget: "C:\\XboxGames\\Minecraft Launcher\\Content\\Minecraft.exe",
+      installPath: "C:\\Users\\Player\\AppData\\Roaming\\.minecraft",
+      artworkUrl: "./assets/nova-deck-logo.svg",
+      artworkType: "icon",
       custom: false
     },
     {
@@ -1722,6 +2328,73 @@ function createPreviewApi() {
       custom: true
     }
   ];
+  const previewJavaControls = [
+    { key: "java_bridge.button0", buttonIndex: 0, label: "A / Cross" },
+    { key: "java_bridge.button1", buttonIndex: 1, label: "B / Circle" },
+    { key: "java_bridge.button2", buttonIndex: 2, label: "X / Square" },
+    { key: "java_bridge.button3", buttonIndex: 3, label: "Y / Triangle" },
+    { key: "java_bridge.button4", buttonIndex: 4, label: "LB / L1" },
+    { key: "java_bridge.button5", buttonIndex: 5, label: "RB / R1" },
+    { key: "java_bridge.button6", buttonIndex: 6, label: "LT / L2" },
+    { key: "java_bridge.button7", buttonIndex: 7, label: "RT / R2" },
+    { key: "java_bridge.button8", buttonIndex: 8, label: "View / Share" },
+    { key: "java_bridge.button9", buttonIndex: 9, label: "Menu / Options" },
+    { key: "java_bridge.button10", buttonIndex: 10, label: "Left Stick" },
+    { key: "java_bridge.button11", buttonIndex: 11, label: "Right Stick" },
+    { key: "java_bridge.button12", buttonIndex: 12, label: "D-pad Up" },
+    { key: "java_bridge.button13", buttonIndex: 13, label: "D-pad Down" },
+    { key: "java_bridge.button14", buttonIndex: 14, label: "D-pad Left" },
+    { key: "java_bridge.button15", buttonIndex: 15, label: "D-pad Right" }
+  ];
+  const previewJavaOutputOptions = [
+    { value: "none", label: "Unassigned" },
+    { value: "mouse:left", label: "Left click / Attack" },
+    { value: "mouse:right", label: "Right click / Use" },
+    { value: "wheel:up", label: "Mouse wheel up" },
+    { value: "wheel:down", label: "Mouse wheel down" },
+    { value: "key:Space", label: "Space / Jump" },
+    { value: "key:Shift", label: "Shift / Sneak" },
+    { value: "key:Control", label: "Control / Sprint" },
+    { value: "key:E", label: "E / Inventory" },
+    { value: "key:Q", label: "Q / Drop" },
+    { value: "key:F3", label: "F3 / Debug" },
+    { value: "key:F5", label: "F5 / Perspective" },
+    { value: "key:Escape", label: "Escape / Menu" },
+    { value: "key:1", label: "Hotbar 1" },
+    { value: "key:2", label: "Hotbar 2" },
+    { value: "key:3", label: "Hotbar 3" },
+    { value: "key:4", label: "Hotbar 4" },
+    { value: "key:5", label: "Hotbar 5" },
+    { value: "key:6", label: "Hotbar 6" },
+    { value: "key:7", label: "Hotbar 7" },
+    { value: "key:8", label: "Hotbar 8" },
+    { value: "key:9", label: "Hotbar 9" }
+  ];
+
+  const getPreviewJavaPreferences = () => ({
+    supported: true,
+    kind: "minecraft-java-bridge",
+    title: "Minecraft Java",
+    status: "ready",
+    message: "After Minecraft is focused, Nova Deck converts controller input into keyboard and mouse input for the game window.",
+    profileName: "Vanilla input bridge",
+    controlTitle: "Button Mapping",
+    toggleTitle: "Bridge",
+    sliderTitle: "Sticks",
+    bridge: cloneSettings(previewJavaBridge),
+    controls: previewJavaControls.map((control) => ({
+      ...control,
+      value: previewJavaBridge.controls[control.key],
+      options: previewJavaOutputOptions
+    })),
+    toggles: [
+      { key: "java_bridge.enabled", label: "Java input bridge", enabled: previewJavaBridge.enabled }
+    ],
+    sliders: [
+      { key: "java_bridge.deadzone", label: "Stick deadzone", min: 0.1, max: 0.7, step: 0.05, value: previewJavaBridge.deadzone },
+      { key: "java_bridge.lookSensitivity", label: "Look sensitivity", min: 0.2, max: 3, step: 0.1, value: previewJavaBridge.lookSensitivity }
+    ]
+  });
 
   return {
     async scanLibrary() {
@@ -1777,6 +2450,70 @@ function createPreviewApi() {
     },
     async installUpdate() {
       return false;
+    },
+    async getGamePreferences(game) {
+      if (game && game.id === "preview:minecraft-java") {
+        return getPreviewJavaPreferences();
+      }
+      if (game && /minecraft/i.test(`${game.title} ${game.source}`)) {
+        return {
+          supported: true,
+          kind: "minecraft-bedrock",
+          title: "Minecraft for Windows",
+          status: "ready",
+          message: "Preview preferences.",
+          optionsPath: "C:\\Users\\Player\\AppData\\Roaming\\Minecraft Bedrock\\Users\\Preview\\games\\com.mojang\\minecraftpe\\options.txt",
+          folderPath: "C:\\Users\\Player\\AppData\\Roaming\\Minecraft Bedrock\\Users\\Preview\\games\\com.mojang\\minecraftpe",
+          profileName: "Preview",
+          controls: [
+            { key: "ctrl_type_0_key.attack", label: "Attack / Destroy", value: "-99", options: [{ value: "-99", label: "Right Trigger / R2" }, { value: "1", label: "A / Cross" }, { value: "2", label: "B / Circle" }] },
+            { key: "ctrl_type_0_key.use", label: "Use / Place", value: "-100", options: [{ value: "-100", label: "Left Trigger / L2" }, { value: "1", label: "A / Cross" }, { value: "2", label: "B / Circle" }] },
+            { key: "ctrl_type_0_key.jump", label: "Jump", value: "1", options: [{ value: "1", label: "A / Cross" }, { value: "2", label: "B / Circle" }] },
+            { key: "ctrl_type_0_key.sneak", label: "Sneak / Fly Down", value: "2", options: [{ value: "1", label: "A / Cross" }, { value: "2", label: "B / Circle" }] }
+          ],
+          toggles: [
+            { key: "ctrl_autojump_gamepad", label: "Auto-jump", enabled: false },
+            { key: "ctrl_swapjumpandsneak", label: "Swap jump/sneak", enabled: false }
+          ],
+          sliders: [
+            { key: "ctrl_sensitivity2_gamepad", label: "Look sensitivity", min: 0, max: 1, step: 0.05, value: 0.5 }
+          ]
+        };
+      }
+      return { supported: false, message: "Nova Deck does not have a settings editor for this app yet." };
+    },
+    async updateGamePreference(game, update) {
+      if (game && game.id === "preview:minecraft-java") {
+        if (update && update.key === "java_bridge.enabled") {
+          previewJavaBridge.enabled = update.value === "1" || update.value === true;
+        } else if (update && update.key === "java_bridge.deadzone") {
+          previewJavaBridge.deadzone = clampNumber(update.value, previewJavaBridge.deadzone, 0.1, 0.7);
+        } else if (update && update.key === "java_bridge.lookSensitivity") {
+          previewJavaBridge.lookSensitivity = clampNumber(update.value, previewJavaBridge.lookSensitivity, 0.2, 3);
+        } else if (update && update.key && update.key.startsWith("java_bridge.button")) {
+          const allowedValues = new Set(previewJavaOutputOptions.map((option) => option.value));
+          if (allowedValues.has(update.value)) {
+            previewJavaBridge.controls[update.key] = update.value;
+          }
+        }
+        return getPreviewJavaPreferences();
+      }
+
+      const preferences = await this.getGamePreferences(game);
+      preferences.message = update && update.key ? "Preview preference saved." : preferences.message;
+      return preferences;
+    },
+    async sendVirtualInput() {
+      return true;
+    },
+    async setInputBridgeProfile() {
+      return true;
+    },
+    async clearInputBridgeProfile() {
+      return true;
+    },
+    async stopVirtualInput() {
+      return true;
     },
     onUpdateStatus() {
       return () => {};
