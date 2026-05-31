@@ -413,16 +413,33 @@ function requestStream(url, headers, onResponse, redirects = 0) {
 
 function extractZip(zipPath, destinationPath) {
   return new Promise((resolve, reject) => {
+    let stderr = "";
+    let stdout = "";
+    const scriptPath = path.join(path.dirname(destinationPath), "extract-update.ps1");
+    fs.mkdirSync(path.dirname(scriptPath), { recursive: true });
+    fs.writeFileSync(scriptPath, buildExtractScript(), "utf8");
+
     const child = childProcess.spawn("powershell.exe", [
       "-NoProfile",
       "-ExecutionPolicy",
       "Bypass",
-      "-Command",
-      "Expand-Archive -LiteralPath $args[0] -DestinationPath $args[1] -Force",
+      "-File",
+      scriptPath,
+      "-ZipPath",
       zipPath,
+      "-DestinationPath",
       destinationPath
     ], {
-      windowsHide: true
+      windowsHide: true,
+      stdio: ["ignore", "pipe", "pipe"]
+    });
+
+    child.stdout.on("data", (chunk) => {
+      stdout += chunk.toString();
+    });
+
+    child.stderr.on("data", (chunk) => {
+      stderr += chunk.toString();
     });
 
     child.on("error", reject);
@@ -431,9 +448,23 @@ function extractZip(zipPath, destinationPath) {
         resolve();
         return;
       }
-      reject(new Error(`Could not unpack update ZIP. PowerShell exited with ${code}.`));
+      const detail = normalizePowerShellOutput(stderr || stdout);
+      reject(new Error(`Could not unpack update ZIP. PowerShell exited with ${code}${detail ? `: ${detail}` : "."}`));
     });
   });
+}
+
+function buildExtractScript() {
+  return [
+    "param(",
+    "  [Parameter(Mandatory=$true)][string]$ZipPath,",
+    "  [Parameter(Mandatory=$true)][string]$DestinationPath",
+    ")",
+    "$ErrorActionPreference = \"Stop\"",
+    "$ProgressPreference = \"SilentlyContinue\"",
+    "New-Item -ItemType Directory -Force -Path $DestinationPath | Out-Null",
+    "Expand-Archive -LiteralPath $ZipPath -DestinationPath $DestinationPath -Force"
+  ].join("\r\n");
 }
 
 function findUpdateAsset(assets) {
@@ -573,6 +604,13 @@ function normalizeByteCount(value) {
     return 0;
   }
   return Math.round(number);
+}
+
+function normalizePowerShellOutput(value) {
+  return String(value || "")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 240);
 }
 
 function toPowerShellString(value) {
