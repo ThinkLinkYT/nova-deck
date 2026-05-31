@@ -604,7 +604,7 @@ function renderSettings() {
         ${renderUpdateProgress()}
         <div class="settings-actions-row">
           <button class="settings-action" data-action="check-updates"${state.updateStatus.canCheck ? "" : " disabled"}>Check for updates</button>
-          <button class="settings-action" data-action="install-update"${state.updateStatus.canInstall ? "" : " disabled"}>Restart Nova Deck</button>
+          <button class="settings-action" data-action="install-update"${state.updateStatus.canInstall ? "" : " disabled"}>Restart and apply</button>
         </div>
       </section>
       <section class="settings-card wide">
@@ -1626,7 +1626,7 @@ function formatBytes(value) {
 
 function getUpdateProgressDetail(status) {
   if (status === "downloaded" || status === "installing") {
-    return "Ready";
+    return "Ready to apply";
   }
   if (status === "available" || status === "downloading") {
     return "Downloading";
@@ -1671,7 +1671,7 @@ function createPreviewApi() {
   let previewStartupEnabled = false;
   let previewUpdateStatus = normalizeUpdateStatus({
     status: "development",
-    message: "Auto-updates run in packaged consumer builds.",
+    message: "Background ZIP updates run in packaged consumer builds.",
     canCheck: false,
     canInstall: false,
     percent: 0
@@ -1768,7 +1768,7 @@ function createPreviewApi() {
     async checkForUpdates() {
       previewUpdateStatus = normalizeUpdateStatus({
         status: "development",
-        message: "Auto-updates run in packaged consumer builds.",
+        message: "Background ZIP updates run in packaged consumer builds.",
         canCheck: false,
         canInstall: false,
         percent: 0
