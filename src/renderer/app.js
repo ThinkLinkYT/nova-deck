@@ -8,7 +8,7 @@ const DEFAULT_CONTROLLER_SETTINGS = {
     scan: { label: "Rescan Library", buttons: [3] },
     fullscreen: { label: "Toggle Fullscreen", buttons: [9] },
     home: { label: "Home View", buttons: [8] },
-    library: { label: "All Games View", buttons: [4] },
+    library: { label: "Apps View", buttons: [4] },
     settings: { label: "Settings View", buttons: [5] }
   }
 };
@@ -59,7 +59,11 @@ const state = {
     status: "idle",
     message: "Updates have not been checked yet.",
     canCheck: true,
-    canInstall: false
+    canInstall: false,
+    percent: 0,
+    version: "",
+    transferredBytes: 0,
+    totalBytes: 0
   },
   mappingCaptureAction: "",
   capturePrimedButtons: new Set(),
@@ -326,14 +330,10 @@ function setView(view, focusPreferred = false) {
 
 function applyFilters() {
   const query = state.search.trim().toLowerCase();
-  const sourceFilter = state.activeView === "library" && state.sourceFilter !== "All"
-    ? state.sourceFilter
-    : null;
 
   state.filteredGames = state.games.filter((game) => {
     const matchesQuery = !query || `${game.title} ${game.source} ${game.launchType}`.toLowerCase().includes(query);
-    const matchesSource = !sourceFilter || game.source === sourceFilter;
-    return matchesQuery && matchesSource;
+    return matchesQuery;
   });
 
   if (state.selectedIndex >= state.filteredGames.length) {
@@ -356,6 +356,7 @@ function renderLoading() {
 function render() {
   applyFilters();
   document.body.classList.toggle("settings-mode", state.activeView === "settings");
+  document.body.classList.toggle("apps-mode", state.activeView === "library");
   document.body.classList.toggle("reduce-motion", Boolean(state.appSettings.reduceMotion));
   renderHero();
   renderContent();
@@ -432,10 +433,10 @@ function renderHome() {
     <div class="home-dashboard">
       <section class="summary-strip">
         ${sources.map((source) => `
-          <button class="source-summary" data-source-filter="${escapeHtml(source.name)}">
+          <div class="source-summary">
             <strong>${source.count}</strong>
             <span>${escapeHtml(source.name)}</span>
-          </button>
+          </div>
         `).join("")}
       </section>
       <section class="section-block">
@@ -443,7 +444,7 @@ function renderHome() {
           <strong>Ready To Launch</strong>
           <span>${featuredGames.length} shown</span>
         </div>
-        <div class="game-grid-inner">
+        <div class="game-grid-inner home-grid-inner">
           ${featuredGames.map((game, index) => renderGameCard(game, index)).join("")}
         </div>
       </section>
@@ -453,32 +454,54 @@ function renderHome() {
 }
 
 function renderLibrary() {
-  elements.libraryCount.textContent = `${state.filteredGames.length} ${state.filteredGames.length === 1 ? "game" : "games"}`;
+  elements.libraryCount.textContent = `${state.filteredGames.length} ${state.filteredGames.length === 1 ? "app" : "apps"}`;
 
-  const sources = [{ name: "All", count: state.games.length }, ...getSourceStats()];
   if (state.filteredGames.length === 0) {
     elements.gameGrid.innerHTML = `
-      <div class="library-screen">
-        <div class="source-filters">
-          ${sources.map((source) => renderFilterChip(source)).join("")}
-        </div>
+      <div class="apps-screen">
         ${renderEmptyStateHtml()}
       </div>
     `;
     return;
   }
 
+  const selectedGame = getSelectedGame() || state.filteredGames[0];
   elements.gameGrid.innerHTML = `
-    <div class="library-screen">
-      <div class="source-filters">
-        ${sources.map((source) => renderFilterChip(source)).join("")}
-      </div>
-      <div class="game-grid-inner">
+    <div class="apps-screen">
+      ${renderSelectedAppPanel(selectedGame)}
+      <div class="apps-grid-inner">
         ${state.filteredGames.map((game, index) => renderGameCard(game, index)).join("")}
       </div>
     </div>
   `;
   scrollSelectedIntoView();
+}
+
+function renderSelectedAppPanel(game) {
+  const hasImage = Boolean(game && game.artworkUrl);
+  const artworkType = getArtworkType(game);
+  return `
+    <section class="apps-feature-panel">
+      <div class="apps-feature-art ${artworkType}${hasImage ? " has-image" : ""}">
+        ${hasImage ? `<img src="${escapeHtml(game.artworkUrl)}" alt="">` : `<span>${escapeHtml(getInitials(game.title))}</span>`}
+      </div>
+      <div class="apps-feature-copy">
+        <p>${escapeHtml(game.source || "App")}</p>
+        <strong>${escapeHtml(game.title)}</strong>
+        <span>${escapeHtml(game.installPath || game.launchTarget || "Local app")}</span>
+      </div>
+      <div class="apps-feature-actions">
+        <button class="app-action-card play-card" data-action="play-selected">
+          <span>Play</span>
+          <strong>${escapeHtml(game.title)}</strong>
+        </button>
+        <button class="app-action-card preferences-card" data-action="app-preferences">
+          <span>Preferences</span>
+          <strong>Coming soon</strong>
+        </button>
+      </div>
+    </section>
+  `;
 }
 
 function renderSettings() {
@@ -578,9 +601,10 @@ function renderSettings() {
       <section class="settings-card">
         <strong>Updates</strong>
         <p>${escapeHtml(state.updateStatus.message)}</p>
+        ${renderUpdateProgress()}
         <div class="settings-actions-row">
           <button class="settings-action" data-action="check-updates"${state.updateStatus.canCheck ? "" : " disabled"}>Check for updates</button>
-          <button class="settings-action" data-action="install-update"${state.updateStatus.canInstall ? "" : " disabled"}>Restart to install</button>
+          <button class="settings-action" data-action="install-update"${state.updateStatus.canInstall ? "" : " disabled"}>Restart Nova Deck</button>
         </div>
       </section>
       <section class="settings-card wide">
@@ -629,6 +653,24 @@ function renderAudioOptions() {
   )).join("");
 }
 
+function renderUpdateProgress() {
+  const percent = clampNumber(state.updateStatus.percent, 0, 0, 100);
+  const activeStatuses = new Set(["available", "downloading", "downloaded", "installing"]);
+  const isActive = activeStatuses.has(state.updateStatus.status);
+  const totalBytes = clampNumber(state.updateStatus.totalBytes, 0, 0, Number.MAX_SAFE_INTEGER);
+  const transferredBytes = clampNumber(state.updateStatus.transferredBytes, 0, 0, Number.MAX_SAFE_INTEGER);
+  const detail = isActive && totalBytes > 0 ? `${formatBytes(transferredBytes)} / ${formatBytes(totalBytes)}` : getUpdateProgressDetail(state.updateStatus.status);
+  return `
+    <div class="update-progress${isActive ? " active" : ""}" style="--update-progress: ${percent}%">
+      <div class="update-progress-track"><span></span></div>
+      <div class="update-progress-meta">
+        <strong>${Math.round(percent)}%</strong>
+        <small>${escapeHtml(detail)}</small>
+      </div>
+    </div>
+  `;
+}
+
 function renderGameCard(game, index) {
   const selected = index === state.selectedIndex ? " selected" : "";
   const initials = getInitials(game.title);
@@ -675,7 +717,7 @@ function renderEmptyStateHtml() {
 function renderViewTitle() {
   const titles = {
     home: "Home",
-    library: "All Games",
+    library: "Apps",
     settings: "Settings"
   };
   elements.viewTitle.textContent = titles[state.activeView] || "Home";
@@ -743,6 +785,10 @@ function handleContentClick(event) {
     checkForUpdates();
   } else if (action === "install-update") {
     installUpdate();
+  } else if (action === "play-selected") {
+    launchSelectedGame();
+  } else if (action === "app-preferences") {
+    showAppPreferencesPlaceholder();
   }
 }
 
@@ -1004,6 +1050,16 @@ function activateControllerFocus() {
   if (focused.classList.contains("game-card")) {
     state.selectedIndex = Number(focused.dataset.index);
     renderHero();
+    if (state.activeView === "library") {
+      render();
+      requestAnimationFrame(() => {
+        const playButton = elements.gameGrid.querySelector("[data-action='play-selected']");
+        if (playButton) {
+          setControllerFocus(playButton);
+        }
+      });
+      return;
+    }
     launchSelectedGame();
     return;
   }
@@ -1134,6 +1190,7 @@ function getFocusableControls() {
     ".source-summary",
     ".filter-chip",
     ".game-card",
+    ".app-action-card",
     ".settings-action",
     ".toggle-row",
     ".settings-select",
@@ -1225,6 +1282,9 @@ function getFocusKey(element) {
   }
   if (element.matches("[data-audio-output]")) {
     return "audio-output";
+  }
+  if (element.classList.contains("app-action-card")) {
+    return `app-action:${element.dataset.action || ""}`;
   }
   if (element.matches("[data-action]")) {
     return `action:${element.dataset.action || ""}:${element.dataset.mapAction || ""}`;
@@ -1348,6 +1408,11 @@ async function installUpdate() {
   }
 }
 
+function showAppPreferencesPlaceholder() {
+  const game = getSelectedGame();
+  showToast(game ? `${game.title} preferences are coming next.` : "App preferences are coming next.");
+}
+
 function saveControllerSettingsSoon() {
   clearTimeout(state.controllerSaveTimer);
   state.controllerSaveTimer = setTimeout(async () => {
@@ -1374,7 +1439,7 @@ function getSelectedGame() {
 }
 
 function getColumnCount() {
-  const grid = elements.gameGrid.querySelector(".game-grid-inner") || elements.gameGrid;
+  const grid = elements.gameGrid.querySelector(".apps-grid-inner") || elements.gameGrid.querySelector(".game-grid-inner") || elements.gameGrid;
   const firstCard = grid.querySelector(".game-card");
   if (!firstCard) {
     return 1;
@@ -1511,7 +1576,11 @@ function normalizeUpdateStatus(status = {}) {
     status: normalizeText(input.status, "idle"),
     message: normalizeText(input.message, "Updates have not been checked yet."),
     canCheck: typeof input.canCheck === "boolean" ? input.canCheck : true,
-    canInstall: typeof input.canInstall === "boolean" ? input.canInstall : false
+    canInstall: typeof input.canInstall === "boolean" ? input.canInstall : false,
+    percent: clampNumber(input.percent, 0, 0, 100),
+    version: normalizeText(input.version, ""),
+    transferredBytes: clampNumber(input.transferredBytes, 0, 0, Number.MAX_SAFE_INTEGER),
+    totalBytes: clampNumber(input.totalBytes, 0, 0, Number.MAX_SAFE_INTEGER)
   };
 }
 
@@ -1537,6 +1606,32 @@ function clampNumber(value, fallback, min, max) {
     return fallback;
   }
   return Math.min(max, Math.max(min, number));
+}
+
+function formatBytes(value) {
+  const bytes = clampNumber(value, 0, 0, Number.MAX_SAFE_INTEGER);
+  if (bytes < 1024) {
+    return `${bytes} B`;
+  }
+
+  const units = ["KB", "MB", "GB"];
+  let size = bytes / 1024;
+  let unitIndex = 0;
+  while (size >= 1024 && unitIndex < units.length - 1) {
+    size /= 1024;
+    unitIndex += 1;
+  }
+  return `${size >= 10 ? size.toFixed(0) : size.toFixed(1)} ${units[unitIndex]}`;
+}
+
+function getUpdateProgressDetail(status) {
+  if (status === "downloaded" || status === "installing") {
+    return "Ready";
+  }
+  if (status === "available" || status === "downloading") {
+    return "Downloading";
+  }
+  return "Idle";
 }
 
 function normalizeText(value, fallback) {
@@ -1578,7 +1673,8 @@ function createPreviewApi() {
     status: "development",
     message: "Auto-updates run in packaged consumer builds.",
     canCheck: false,
-    canInstall: false
+    canInstall: false,
+    percent: 0
   });
   const previewGames = [
     {
@@ -1674,7 +1770,8 @@ function createPreviewApi() {
         status: "development",
         message: "Auto-updates run in packaged consumer builds.",
         canCheck: false,
-        canInstall: false
+        canInstall: false,
+        percent: 0
       });
       return normalizeUpdateStatus(previewUpdateStatus);
     },
