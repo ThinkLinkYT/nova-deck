@@ -594,10 +594,20 @@ function renderLibrary() {
   }
 
   const selectedGame = getSelectedGame() || state.filteredGames[0];
+  const sourceCount = new Set(state.filteredGames.map((game) => game.source || "Local")).size;
   elements.gameGrid.innerHTML = `
     <div class="apps-screen">
-      ${renderSelectedAppPanel(selectedGame)}
-      ${renderAppPreferencesPanel(selectedGame)}
+      <div class="apps-showcase">
+        ${renderSelectedAppPanel(selectedGame)}
+        ${renderAppPreferencesPanel(selectedGame)}
+      </div>
+      <div class="apps-shelf-head">
+        <div>
+          <strong>All Apps</strong>
+          <span>${state.filteredGames.length} ready across ${sourceCount} ${sourceCount === 1 ? "source" : "sources"}</span>
+        </div>
+        <b>${state.filteredGames.length} ${state.filteredGames.length === 1 ? "app" : "apps"}</b>
+      </div>
       <div class="apps-grid-inner">
         ${state.filteredGames.map((game, index) => renderGameCard(game, index)).join("")}
       </div>
@@ -606,7 +616,8 @@ function renderLibrary() {
   if (state.appPreferences && state.appPreferences.gameId === selectedGame.id) {
     scrollPreferencesIntoView();
   } else {
-    scrollSelectedIntoView();
+    elements.gameGrid.scrollTop = 0;
+    elements.gameGrid.scrollLeft = 0;
   }
 }
 
@@ -619,28 +630,30 @@ function renderSelectedAppPanel(game) {
       <div class="apps-feature-art ${artworkType}${hasImage ? " has-image" : ""}">
         ${hasImage ? `<img src="${escapeHtml(game.artworkUrl)}" alt="">` : `<span>${escapeHtml(getInitials(game.title))}</span>`}
       </div>
-      <div class="apps-feature-copy">
-        <div class="apps-feature-kicker">
-          <p>${escapeHtml(game.source || "App")}</p>
-          ${profile.favorite ? "<span>Favorite</span>" : ""}
-          ${profile.hidden ? "<span>Hidden</span>" : ""}
+      <div class="apps-feature-main">
+        <div class="apps-feature-copy">
+          <div class="apps-feature-kicker">
+            <p>${escapeHtml(game.source || "App")}</p>
+            ${profile.favorite ? "<span>Favorite</span>" : ""}
+            ${profile.hidden ? "<span>Hidden</span>" : ""}
+          </div>
+          <strong>${escapeHtml(game.title)}</strong>
+          <em>${escapeHtml(game.installPath || game.launchTarget || "Local app")}</em>
         </div>
-        <strong>${escapeHtml(game.title)}</strong>
-        <em>${escapeHtml(game.installPath || game.launchTarget || "Local app")}</em>
         <div class="game-detail-list">
           <div><span>Profile</span><b>${escapeHtml(profile.profileName || "Default")}</b></div>
           <div><span>Account</span><b>${escapeHtml(profile.accountLabel || "Launcher default")}</b></div>
           <div><span>Played</span><b>${escapeHtml(formatPlayStats(profile))}</b></div>
           <div><span>Launch</span><b>${escapeHtml(game.launchType || "local")}</b></div>
         </div>
-        <div class="apps-feature-actions">
-          <button class="app-action-card app-command primary" data-action="play-selected">Play</button>
-          <button class="app-action-card app-command" data-action="app-preferences">Preferences</button>
-          <button class="app-action-card app-command" data-action="toggle-favorite">${profile.favorite ? "Unfavorite" : "Favorite"}</button>
-          <button class="app-action-card app-command" data-action="change-artwork">Artwork</button>
-          <button class="app-action-card app-command" data-action="open-game-folder">Folder</button>
-          <button class="app-action-card app-command ${profile.hidden ? "restore" : "danger"}" data-action="toggle-hidden">${profile.hidden ? "Unhide" : "Hide"}</button>
-        </div>
+      </div>
+      <div class="apps-feature-actions">
+        <button class="app-action-card app-command primary" data-action="play-selected">Play</button>
+        <button class="app-action-card app-command" data-action="app-preferences">Preferences</button>
+        <button class="app-action-card app-command" data-action="toggle-favorite">${profile.favorite ? "Unfavorite" : "Favorite"}</button>
+        <button class="app-action-card app-command" data-action="change-artwork">Icon</button>
+        <button class="app-action-card app-command" data-action="open-game-folder">Folder</button>
+        <button class="app-action-card app-command ${profile.hidden ? "restore" : "danger"}" data-action="toggle-hidden">${profile.hidden ? "Unhide" : "Hide"}</button>
       </div>
     </section>
   `;
@@ -765,8 +778,8 @@ function renderGameProfileEditor(game) {
         <div class="profile-editor-actions">
           <button class="settings-action compact" data-action="toggle-favorite">${profile.favorite ? "Unfavorite" : "Favorite"}</button>
           <button class="settings-action compact" data-action="toggle-hidden">${profile.hidden ? "Unhide" : "Hide"}</button>
-          <button class="settings-action compact" data-action="change-artwork">Artwork</button>
-          ${profile.artworkPath ? `<button class="settings-action compact" data-action="reset-artwork">Reset art</button>` : ""}
+          <button class="settings-action compact" data-action="change-artwork">Icon</button>
+          ${profile.artworkPath ? `<button class="settings-action compact" data-action="reset-artwork">Reset icon</button>` : ""}
         </div>
       </div>
       <div class="profile-field-grid">
@@ -982,7 +995,7 @@ function renderSettings() {
           </section>
           <section class="settings-card wide">
             <strong>Game Input Profiles</strong>
-            <p>Profiles store favorites, account labels, launch arguments, custom artwork, and bridge mappings locally.</p>
+            <p>Profiles store favorites, account labels, launch arguments, custom icons, and bridge mappings locally.</p>
             <div class="setting-pill neutral">Local profiles active</div>
           </section>
         </div>
@@ -1140,13 +1153,14 @@ function renderQuickMenu() {
 
   const game = getSelectedGame();
   const profile = getGameProfile(game);
+  const bridgeLabel = getSelectedBridgeLabel(game);
   elements.quickMenu.classList.remove("hidden");
   elements.quickMenu.innerHTML = `
     <div class="quick-menu-panel">
       <div class="quick-menu-head">
         <div>
           <strong>Quick Menu</strong>
-          <span>${escapeHtml(game ? game.title : "Nova Deck")}</span>
+          <span>${escapeHtml(game ? `${game.title} • ${state.activeView === "library" ? "Apps" : titleCase(state.activeView)}` : "Nova Deck")}</span>
         </div>
         <button class="quick-action icon-action" data-action="close-quick-menu" aria-label="Close quick menu">X</button>
       </div>
@@ -1160,13 +1174,23 @@ function renderQuickMenu() {
           <span>${escapeHtml(profile.accountLabel || "Launcher default account")}</span>
         </div>
       </div>
+      <div class="quick-status-grid">
+        ${renderQuickStatus("Controller", getQuickControllerLabel())}
+        ${renderQuickStatus("Input", bridgeLabel)}
+        ${renderQuickStatus("Update", getQuickUpdateLabel())}
+        ${renderQuickStatus("Theme", getThemeLabel(state.appSettings.theme))}
+      </div>
       <div class="quick-action-grid">
         <button class="quick-action primary" data-action="play-selected">Play</button>
         <button class="quick-action" data-action="app-preferences">Preferences</button>
+        <button class="quick-action" data-action="change-artwork">Icon</button>
         <button class="quick-action" data-action="toggle-favorite">${profile.favorite ? "Unfavorite" : "Favorite"}</button>
         <button class="quick-action" data-action="fullscreen">${state.isFullscreen ? "Exit Fullscreen" : "Fullscreen"}</button>
+        <button class="quick-action" data-action="scan">Scan</button>
         <button class="quick-action" data-action="quick-view" data-view="home">Home</button>
         <button class="quick-action" data-action="quick-view" data-view="library">Apps</button>
+        <button class="quick-action" data-action="quick-view" data-view="settings">Settings</button>
+        <button class="quick-action" data-action="open-game-folder">Folder</button>
       </div>
       <div class="quick-power-row">
         ${renderQuickPowerButton("exit", "Exit")}
@@ -1177,8 +1201,67 @@ function renderQuickMenu() {
   `;
 }
 
+function renderQuickStatus(label, value) {
+  return `
+    <div class="quick-status-card">
+      <span>${escapeHtml(label)}</span>
+      <strong>${escapeHtml(value)}</strong>
+    </div>
+  `;
+}
+
 function renderQuickPowerButton(action, label) {
   return `<button class="quick-action compact" data-action="power" data-power-action="${escapeHtml(action)}">${escapeHtml(label)}</button>`;
+}
+
+function getQuickControllerLabel() {
+  if (!state.controllerName) {
+    return "Disconnected";
+  }
+
+  const snapshot = state.controllerSnapshot || getEmptyControllerSnapshot();
+  const pressedCount = snapshot.buttons ? snapshot.buttons.size : 0;
+  return pressedCount > 0 ? `${state.controllerName} • ${pressedCount} pressed` : state.controllerName;
+}
+
+function getSelectedBridgeLabel(game) {
+  if (!game) {
+    return "Shell controls";
+  }
+
+  if (state.javaBridgeProfile && state.javaBridgeProfile.gameId === game.id) {
+    const bridge = state.javaBridgeProfile.data && state.javaBridgeProfile.data.bridge;
+    return bridge && bridge.enabled ? "Bridge on" : "Game default";
+  }
+
+  return state.controllerName ? "Game default" : "No controller";
+}
+
+function getQuickUpdateLabel() {
+  const status = state.updateStatus.status;
+  if (status === "downloaded") {
+    return "Ready";
+  }
+  if (status === "downloading") {
+    return `${Math.round(clampNumber(state.updateStatus.percent, 0, 0, 100))}%`;
+  }
+  if (status === "current") {
+    return "Current";
+  }
+  if (status === "error") {
+    return "Check failed";
+  }
+  return "Idle";
+}
+
+function getThemeLabel(themeId) {
+  const theme = THEMES.find((item) => item.id === themeId);
+  return theme ? theme.label : "Nova";
+}
+
+function titleCase(value) {
+  const text = String(value || "home");
+  return text.slice(0, 1).toUpperCase() + text.slice(1);
 }
 
 function renderGameCard(game, index) {
@@ -1506,7 +1589,16 @@ function handleQuickMenuClick(event) {
   } else if (action === "quick-view") {
     setView(actionButton.dataset.view || "home", true);
   } else if (action === "fullscreen") {
-    toggleFullscreen();
+    toggleFullscreen().then(renderQuickMenu);
+  } else if (action === "scan") {
+    closeQuickMenu();
+    scanLibrary();
+  } else if (action === "change-artwork") {
+    closeQuickMenu();
+    changeSelectedArtwork();
+  } else if (action === "open-game-folder") {
+    closeQuickMenu();
+    openSelectedGameFolder();
   } else if (action === "app-preferences") {
     const game = getSelectedGame();
     closeQuickMenu();
@@ -1517,6 +1609,7 @@ function handleQuickMenuClick(event) {
     openAppPreferences();
   } else if (action === "toggle-favorite") {
     toggleSelectedFavorite();
+    renderQuickMenu();
   } else if (action === "power") {
     runPowerAction(actionButton.dataset.powerAction);
   }

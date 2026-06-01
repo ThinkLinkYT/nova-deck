@@ -10,6 +10,8 @@ async function scanGames() {
     startMenuGames,
     uninstallGames,
     folderGames,
+    launcherMetadataGames,
+    knownLauncherGames,
     minecraftApps,
     knownMinecraftGames
   ] = await Promise.all([
@@ -19,6 +21,8 @@ async function scanGames() {
     scanStartMenuGames(),
     scanUninstallGames(),
     scanCommonGameFolders(),
+    scanLauncherMetadataGames(),
+    scanKnownLauncherInstallations(),
     scanMinecraftApps(),
     scanKnownMinecraftInstallations()
   ]);
@@ -30,6 +34,8 @@ async function scanGames() {
     ...startMenuGames,
     ...uninstallGames,
     ...folderGames,
+    ...launcherMetadataGames,
+    ...knownLauncherGames,
     ...minecraftApps,
     ...knownMinecraftGames
   ]);
@@ -223,6 +229,135 @@ async function scanCommonGameFolders() {
   }
 
   return games;
+}
+
+async function scanLauncherMetadataGames() {
+  return [
+    ...scanRiotMetadataGames(),
+    ...scanItchGames(),
+    ...scanBattleNetProductDb()
+  ];
+}
+
+function scanRiotMetadataGames() {
+  const root = path.join(process.env.ProgramData || "C:\\ProgramData", "Riot Games", "Metadata");
+  const games = [];
+  if (!fs.existsSync(root)) {
+    return games;
+  }
+
+  walkFiles(root, 3, (filePath) => {
+    if (!/\.(ya?ml|json)$/i.test(filePath)) {
+      return;
+    }
+
+    const text = safeReadFile(filePath);
+    const installPath = firstMatch(text, [
+      /product_install_full_path:\s*"?([^"\r\n]+)"?/i,
+      /install_full_path:\s*"?([^"\r\n]+)"?/i,
+      /install_location:\s*"?([^"\r\n]+)"?/i,
+      /"install_location"\s*:\s*"([^"]+)"/i
+    ]);
+
+    if (!installPath || !fs.existsSync(installPath)) {
+      return;
+    }
+
+    const title = cleanTitle(firstMatch(text, [
+      /product_display_name:\s*"?([^"\r\n]+)"?/i,
+      /product_name:\s*"?([^"\r\n]+)"?/i,
+      /"name"\s*:\s*"([^"]+)"/i
+    ]) || path.basename(installPath));
+    const exePath = findLikelyExecutable(installPath, title);
+    if (!exePath) {
+      return;
+    }
+
+    games.push(createExeGame({
+      id: `riot-metadata:${stableId(installPath)}`,
+      title,
+      source: "Riot",
+      exePath,
+      installPath
+    }));
+  });
+
+  return games;
+}
+
+function scanItchGames() {
+  const roots = [
+    path.join(process.env.APPDATA || "", "itch", "apps"),
+    path.join(process.env.LOCALAPPDATA || "", "itch", "apps")
+  ].filter((root) => root && fs.existsSync(root));
+  const games = [];
+
+  for (const root of roots) {
+    for (const entry of safeReadDir(root, { withFileTypes: true })) {
+      if (!entry.isDirectory()) {
+        continue;
+      }
+
+      const installPath = path.join(root, entry.name);
+      const title = cleanTitle(entry.name);
+      const exePath = findLikelyExecutable(installPath, title);
+      if (!exePath) {
+        continue;
+      }
+
+      games.push(createExeGame({
+        id: `itch:${stableId(installPath)}`,
+        title,
+        source: "itch.io",
+        exePath,
+        installPath
+      }));
+    }
+  }
+
+  return games;
+}
+
+function scanBattleNetProductDb() {
+  const productDb = path.join(process.env.ProgramData || "C:\\ProgramData", "Battle.net", "Agent", "product.db");
+  if (!fs.existsSync(productDb)) {
+    return [];
+  }
+
+  let text = "";
+  try {
+    const buffer = fs.readFileSync(productDb);
+    text = `${buffer.toString("utf8")}\n${buffer.toString("utf16le")}`;
+  } catch {
+    return [];
+  }
+
+  const paths = new Set();
+  const regexes = [
+    /install[_-]?path["'\s:=]+([A-Z]:\\[^"\r\n\0]+)/gi,
+    /install[_-]?dir["'\s:=]+([A-Z]:\\[^"\r\n\0]+)/gi,
+    /([A-Z]:\\(?:Program Files(?: \(x86\))?|Games|Battle\.net Games|Blizzard Games)\\[^"\r\n\0]+(?:World of Warcraft|Overwatch|Diablo|Hearthstone|StarCraft|Heroes of the Storm|Call of Duty)[^"\r\n\0]*)/gi
+  ];
+
+  for (const regex of regexes) {
+    let match;
+    while ((match = regex.exec(text))) {
+      const installPath = cleanExecutablePath(match[1]);
+      if (installPath && fs.existsSync(installPath)) {
+        paths.add(installPath);
+      }
+    }
+  }
+
+  return Array.from(paths)
+    .map((installPath) => gameFromInstallFolder(installPath, getSourceForName(installPath), `battlenet-db:${stableId(installPath)}`))
+    .filter(Boolean);
+}
+
+async function scanKnownLauncherInstallations() {
+  return getKnownLauncherInstallFolders()
+    .map((installPath) => gameFromInstallFolder(installPath, getSourceForName(installPath), `known-launcher:${stableId(installPath)}`))
+    .filter(Boolean);
 }
 
 async function scanShortcutGames() {
@@ -616,7 +751,7 @@ function isMinecraftShortcut(title, target, args) {
 }
 
 function isGameShortcutPath(target, workingDirectory) {
-  return /\\(steamapps\\common|Epic Games|GOG Games|XboxGames|Games|Riot Games|Battle\.net|Ubisoft|EA Games)\\/i.test(
+  return /\\(steamapps\\common|Epic Games|GOG Games|XboxGames|Games|Riot Games|Battle\.net|Blizzard Games|Ubisoft|EA Games|Origin Games|itch|itch\.io)\\/i.test(
     `${target || ""} ${workingDirectory || ""}`
   );
 }
@@ -728,7 +863,7 @@ function isLikelyGameName(name, publisher = "") {
     return false;
   }
 
-  return /roblox player|fortnite|valorant|league of legends|riot client|minecraft|curseforge|modrinth|feather|lunar|badlion|prism|multimc|atlauncher|gdlauncher|steam|epic games|xbox|battle\.net|blizzard|overwatch|call of duty|warzone|diablo|hearthstone|gog galaxy|ubisoft connect|ea app|origin|rockstar games|genshin|honkai|hoyoplay|zenless|osu!|brawlhalla|halo|forza|doom|counter-strike|apex legends|the finals|valorant|escape from tarkov|wargaming/i.test(text);
+  return /roblox player|fortnite|valorant|league of legends|riot client|minecraft|curseforge|modrinth|feather|lunar|badlion|prism|multimc|atlauncher|gdlauncher|steam|epic games|xbox|battle\.net|blizzard|world of warcraft|starcraft|heroes of the storm|overwatch|call of duty|warzone|diablo|hearthstone|gog galaxy|ubisoft connect|ea app|origin|rockstar games|genshin|honkai|hoyoplay|zenless|osu!|brawlhalla|halo|forza|doom|counter-strike|apex legends|the finals|valorant|escape from tarkov|wargaming/i.test(text);
 }
 
 function isBlockedAppName(value) {
@@ -755,7 +890,7 @@ function getSourceForName(name, publisher = "") {
   if (/riot|valorant|league of legends/i.test(text)) {
     return "Riot";
   }
-  if (/battle\.net|blizzard|overwatch|diablo|hearthstone|call of duty|warzone/i.test(text)) {
+  if (/battle\.net|blizzard|world of warcraft|starcraft|heroes of the storm|overwatch|diablo|hearthstone|call of duty|warzone/i.test(text)) {
     return "Battle.net";
   }
   if (/ubisoft/i.test(text)) {
@@ -767,6 +902,9 @@ function getSourceForName(name, publisher = "") {
   if (/gog/i.test(text)) {
     return "GOG";
   }
+  if (/itch/i.test(text)) {
+    return "itch.io";
+  }
   return "Game";
 }
 
@@ -776,15 +914,26 @@ function getCommonGameFolders() {
     folders.push(
       path.join(drive, "XboxGames"),
       path.join(drive, "Games"),
+      path.join(drive, "Battle.net Games"),
+      path.join(drive, "Blizzard Games"),
       path.join(drive, "Epic Games"),
       path.join(drive, "GOG Games"),
+      path.join(drive, "itch"),
+      path.join(drive, "itch.io"),
       path.join(drive, "Riot Games"),
+      path.join(drive, "Ubisoft Games"),
       path.join(drive, "Program Files", "Epic Games"),
       path.join(drive, "Program Files", "EA Games"),
+      path.join(drive, "Program Files", "Electronic Arts"),
       path.join(drive, "Program Files", "GOG Games"),
+      path.join(drive, "Program Files", "Ubisoft", "Ubisoft Game Launcher", "games"),
       path.join(drive, "Program Files", "Riot Games"),
+      path.join(drive, "Program Files", "ModifiableWindowsApps"),
       path.join(drive, "Program Files (x86)", "Steam", "steamapps", "common"),
-      path.join(drive, "Program Files (x86)", "Origin Games")
+      path.join(drive, "Program Files (x86)", "Battle.net Games"),
+      path.join(drive, "Program Files (x86)", "Blizzard Games"),
+      path.join(drive, "Program Files (x86)", "Origin Games"),
+      path.join(drive, "Program Files (x86)", "Ubisoft", "Ubisoft Game Launcher", "games")
     );
   }
   return folders;
@@ -795,9 +944,79 @@ function getFolderSource(rootPath) {
   if (/epic games/i.test(rootPath)) return "Epic";
   if (/xboxgames/i.test(rootPath)) return "Xbox";
   if (/gog/i.test(rootPath)) return "GOG";
+  if (/itch(?:\.io)?/i.test(rootPath)) return "itch.io";
   if (/riot/i.test(rootPath)) return "Riot";
+  if (/battle\.net|blizzard/i.test(rootPath)) return "Battle.net";
+  if (/ubisoft/i.test(rootPath)) return "Ubisoft";
   if (/ea games|origin games/i.test(rootPath)) return "EA";
   return "Game";
+}
+
+function getKnownLauncherInstallFolders() {
+  const folders = [];
+  const gameFolderNames = [
+    "Call of Duty",
+    "Diablo III",
+    "Diablo IV",
+    "Diablo Immortal",
+    "Hearthstone",
+    "Heroes of the Storm",
+    "Overwatch",
+    "Overwatch 2",
+    "StarCraft II",
+    "World of Warcraft"
+  ];
+
+  for (const drive of getFileSystemDrives()) {
+    const roots = [
+      drive,
+      path.join(drive, "Games"),
+      path.join(drive, "Battle.net Games"),
+      path.join(drive, "Blizzard Games"),
+      path.join(drive, "Program Files"),
+      path.join(drive, "Program Files (x86)")
+    ];
+
+    for (const root of roots) {
+      for (const folderName of gameFolderNames) {
+        const candidate = path.join(root, folderName);
+        if (fs.existsSync(candidate)) {
+          folders.push(candidate);
+        }
+      }
+    }
+  }
+
+  return folders.filter(uniqueByPath);
+}
+
+function gameFromInstallFolder(installPath, source, id) {
+  if (!installPath || !fs.existsSync(installPath)) {
+    return null;
+  }
+
+  const title = cleanTitle(path.basename(installPath));
+  const exePath = findLikelyExecutable(installPath, title);
+  if (!exePath) {
+    return null;
+  }
+
+  return createExeGame({ id, title, source, exePath, installPath });
+}
+
+function createExeGame({ id, title, source, exePath, installPath }) {
+  return {
+    id,
+    title: cleanTitle(title),
+    source: source || "Game",
+    launchType: "exe",
+    launchTarget: exePath,
+    executablePath: exePath,
+    iconPath: exePath,
+    installPath,
+    focusProcess: path.basename(exePath, path.extname(exePath)),
+    lastSeen: Date.now()
+  };
 }
 
 function findLikelyExecutable(rootPath, title) {
@@ -1115,6 +1334,16 @@ function cleanExecutablePath(value) {
   }
 
   return text.replace(/\//g, "\\").trim();
+}
+
+function firstMatch(text, regexes) {
+  for (const regex of regexes) {
+    const match = String(text || "").match(regex);
+    if (match && match[1]) {
+      return cleanExecutablePath(match[1]);
+    }
+  }
+  return "";
 }
 
 function safeReadDir(directoryPath, options) {

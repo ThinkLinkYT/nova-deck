@@ -115,7 +115,7 @@ ipcMain.handle("library:remove-custom", (_event, gameId) => {
 
 ipcMain.handle("library:choose-artwork", async () => {
   const result = await dialog.showOpenDialog(mainWindow, {
-    title: "Choose Game Artwork",
+    title: "Choose Game Icon",
     properties: ["openFile"],
     filters: [
       { name: "Images", extensions: ["png", "jpg", "jpeg", "webp", "bmp", "gif", "ico"] }
