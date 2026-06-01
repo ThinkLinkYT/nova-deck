@@ -1,6 +1,6 @@
 {
   "name": "nova-deck",
-  "version": "0.1.7",
+  "version": "0.1.8",
   "description": "A local-first Windows console shell for PC games.",
   "main": "src/main.js",
   "type": "commonjs",
@@ -36,8 +36,7 @@
     ],
     "win": {
       "target": [
-        "nsis",
-        "zip"
+        "nsis"
       ],
       "icon": "src/renderer/assets/nova-deck-icon.ico"
     },

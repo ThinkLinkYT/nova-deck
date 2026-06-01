@@ -1,10 +1,11 @@
 const path = require("path");
 const fs = require("fs");
+const { execFile } = require("child_process");
 const { app, BrowserWindow, dialog, ipcMain, shell } = require("electron");
 const { scanGames, gameFromFile } = require("./scanner");
 const { launchGame } = require("./launcher");
 const { createStore } = require("./storage");
-const { enrichGamesWithArtwork } = require("./icon-cache");
+const { enrichGamesWithArtwork, pathToFileUrl } = require("./icon-cache");
 const { getGamePreferences, updateGamePreference } = require("./game-preferences");
 const {
   setupInputBridge,
@@ -112,6 +113,26 @@ ipcMain.handle("library:remove-custom", (_event, gameId) => {
   return store.removeCustomGame(gameId);
 });
 
+ipcMain.handle("library:choose-artwork", async () => {
+  const result = await dialog.showOpenDialog(mainWindow, {
+    title: "Choose Game Artwork",
+    properties: ["openFile"],
+    filters: [
+      { name: "Images", extensions: ["png", "jpg", "jpeg", "webp", "bmp", "gif", "ico"] }
+    ]
+  });
+
+  if (result.canceled || result.filePaths.length === 0) {
+    return null;
+  }
+
+  const artworkPath = result.filePaths[0];
+  return {
+    artworkPath,
+    artworkUrl: pathToFileUrl(artworkPath)
+  };
+});
+
 ipcMain.handle("settings:get-controller", () => {
   return store.getControllerSettings();
 });
@@ -126,6 +147,14 @@ ipcMain.handle("settings:get-app", () => {
 
 ipcMain.handle("settings:update-app", (_event, settings) => {
   return store.updateAppSettings(settings);
+});
+
+ipcMain.handle("profiles:get-all", () => {
+  return store.getGameProfiles();
+});
+
+ipcMain.handle("profiles:update", (_event, gameId, update) => {
+  return store.updateGameProfile(gameId, update);
 });
 
 ipcMain.handle("settings:get-startup-enabled", () => {
@@ -177,7 +206,21 @@ ipcMain.handle("input:stop", () => {
 });
 
 ipcMain.handle("game:launch", async (_event, game) => {
-  return launchGame(game, shell);
+  const profile = store.getGameProfile(game && game.id);
+  const result = await launchGame({
+    ...game,
+    launchArgs: profile.launchArgs || game.launchArgs || ""
+  }, shell);
+
+  if (result.ok && game && game.id) {
+    store.updateGameProfile(game.id, {
+      ...profile,
+      playCount: Number(profile.playCount || 0) + 1,
+      lastPlayedAt: Date.now()
+    });
+  }
+
+  return result;
 });
 
 ipcMain.handle("app:toggle-fullscreen", () => {
@@ -209,6 +252,10 @@ ipcMain.handle("app:open-path", async (_event, targetPath) => {
   }
   await shell.openPath(targetPath);
   return true;
+});
+
+ipcMain.handle("app:power-action", async (_event, action) => {
+  return runPowerAction(action);
 });
 
 function mergeGames(detectedGames, customGames) {
@@ -284,4 +331,34 @@ function buildStartupScript() {
     `set "APP_DIR=${appRoot}"`,
     `start "" "${electronPath}" "%APP_DIR%"`
   ].join("\r\n");
+}
+
+function runPowerAction(action) {
+  if (action === "exit") {
+    app.quit();
+    return true;
+  }
+
+  if (action === "restart-app") {
+    app.relaunch();
+    app.exit(0);
+    return true;
+  }
+
+  if (action === "sleep") {
+    execFile("rundll32.exe", ["powrprof.dll,SetSuspendState", "0,1,0"], { windowsHide: true }, () => {});
+    return true;
+  }
+
+  if (action === "shutdown") {
+    execFile("shutdown.exe", ["/s", "/t", "0"], { windowsHide: true }, () => {});
+    return true;
+  }
+
+  if (action === "restart-pc") {
+    execFile("shutdown.exe", ["/r", "/t", "0"], { windowsHide: true }, () => {});
+    return true;
+  }
+
+  return false;
 }

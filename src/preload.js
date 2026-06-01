@@ -5,10 +5,13 @@ contextBridge.exposeInMainWorld("nova", {
   getCustomGames: () => ipcRenderer.invoke("library:get-custom"),
   addGame: () => ipcRenderer.invoke("library:add-game"),
   removeCustomGame: (gameId) => ipcRenderer.invoke("library:remove-custom", gameId),
+  chooseArtwork: () => ipcRenderer.invoke("library:choose-artwork"),
   getControllerSettings: () => ipcRenderer.invoke("settings:get-controller"),
   updateControllerSettings: (settings) => ipcRenderer.invoke("settings:update-controller", settings),
   getAppSettings: () => ipcRenderer.invoke("settings:get-app"),
   updateAppSettings: (settings) => ipcRenderer.invoke("settings:update-app", settings),
+  getGameProfiles: () => ipcRenderer.invoke("profiles:get-all"),
+  updateGameProfile: (gameId, update) => ipcRenderer.invoke("profiles:update", gameId, update),
   getStartupEnabled: () => ipcRenderer.invoke("settings:get-startup-enabled"),
   setStartupEnabled: (enabled) => ipcRenderer.invoke("settings:set-startup-enabled", enabled),
   getUpdateStatus: () => ipcRenderer.invoke("updates:get-status"),
@@ -29,6 +32,7 @@ contextBridge.exposeInMainWorld("nova", {
   toggleFullscreen: () => ipcRenderer.invoke("app:toggle-fullscreen"),
   isFullscreen: () => ipcRenderer.invoke("app:is-fullscreen"),
   openPath: (targetPath) => ipcRenderer.invoke("app:open-path", targetPath),
+  runPowerAction: (action) => ipcRenderer.invoke("app:power-action", action),
   onFullscreenChanged: (callback) => {
     const listener = (_event, isFullscreen) => callback(Boolean(isFullscreen));
     ipcRenderer.on("app:fullscreen-changed", listener);

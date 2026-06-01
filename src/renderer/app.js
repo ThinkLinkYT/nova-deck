@@ -9,7 +9,8 @@ const DEFAULT_CONTROLLER_SETTINGS = {
     fullscreen: { label: "Toggle Fullscreen", buttons: [9] },
     home: { label: "Home View", buttons: [8] },
     library: { label: "Apps View", buttons: [4] },
-    settings: { label: "Settings View", buttons: [5] }
+    settings: { label: "Settings View", buttons: [5] },
+    quickMenu: { label: "Quick Menu", buttons: [16] }
   }
 };
 
@@ -76,11 +77,33 @@ const DEFAULT_APP_SETTINGS = {
   startView: "home",
   rescanOnStart: true,
   reduceMotion: false,
-  showHiddenLaunchers: false
+  showHiddenLaunchers: false,
+  theme: "nova"
 };
+
+const DEFAULT_GAME_PROFILE = {
+  favorite: false,
+  hidden: false,
+  profileName: "",
+  accountLabel: "",
+  launchArgs: "",
+  artworkPath: "",
+  lastPlayedAt: 0,
+  playCount: 0
+};
+
+const THEMES = [
+  { id: "nova", label: "Nova" },
+  { id: "ember", label: "Ember" },
+  { id: "ocean", label: "Ocean" },
+  { id: "light", label: "Light" }
+];
 
 const INPUT_BRIDGE_KINDS = new Set(["minecraft-java-bridge", "universal-controller-bridge"]);
 const INPUT_BRIDGE_PREFIXES = ["java_bridge.", "universal_bridge."];
+const CONTROLLER_DIRECTION_BIAS = 1.22;
+const CONTROLLER_REPEAT_ACCELERATION = 0.55;
+const CONTROLLER_MIN_REPEAT_MS = 85;
 
 const state = {
   games: [],
@@ -93,6 +116,7 @@ const state = {
   controllerName: "",
   controllerSettings: cloneControllerSettings(DEFAULT_CONTROLLER_SETTINGS),
   appSettings: cloneSettings(DEFAULT_APP_SETTINGS),
+  gameProfiles: {},
   startupEnabled: false,
   audioOutputs: [],
   updateStatus: {
@@ -123,8 +147,12 @@ const state = {
   isFullscreen: false,
   meta: null,
   lastButtons: new Map(),
-  lastAxisMove: 0,
+  controllerNavDirection: "",
+  controllerNavLastAt: 0,
+  controllerNavRepeats: 0,
   controllerFocusKey: "",
+  quickMenuOpen: false,
+  controllerSnapshot: null,
   toastTimer: null
 };
 
@@ -149,7 +177,8 @@ const elements = {
   sourceStatus: document.querySelector("#sourceStatus"),
   activityText: document.querySelector("#activityText"),
   clockText: document.querySelector("#clockText"),
-  toast: document.querySelector("#toast")
+  toast: document.querySelector("#toast"),
+  quickMenu: document.querySelector("#quickMenu")
 };
 
 init();
@@ -161,6 +190,8 @@ async function init() {
   await loadMeta();
   await loadControllerSettings();
   await loadAppSettings();
+  applyTheme();
+  await loadGameProfiles();
   await loadStartupState();
   await loadAudioOutputs();
   await loadUpdateStatus();
@@ -202,6 +233,7 @@ function bindEvents() {
     }
   });
   elements.gameGrid.addEventListener("error", handleImageError, true);
+  elements.quickMenu.addEventListener("click", handleQuickMenuClick);
 
   window.addEventListener("keydown", handleKeyDown);
   window.addEventListener("gamepadconnected", (event) => {
@@ -257,6 +289,14 @@ async function loadAppSettings() {
   }
 }
 
+async function loadGameProfiles() {
+  try {
+    state.gameProfiles = normalizeGameProfiles(await api.getGameProfiles());
+  } catch {
+    state.gameProfiles = {};
+  }
+}
+
 async function loadStartupState() {
   try {
     state.startupEnabled = await api.getStartupEnabled();
@@ -300,7 +340,8 @@ async function scanLibrary() {
   renderLoading();
 
   try {
-    state.games = await api.scanLibrary();
+    await loadGameProfiles();
+    state.games = applyGameProfilesToGames(await api.scanLibrary());
     state.scanning = false;
     state.selectedIndex = 0;
     applyFilters();
@@ -321,7 +362,8 @@ async function addGame() {
     return;
   }
 
-  state.games = await api.scanLibrary();
+  await loadGameProfiles();
+  state.games = applyGameProfilesToGames(await api.scanLibrary());
   state.search = "";
   elements.searchInput.value = "";
   applyFilters();
@@ -353,10 +395,14 @@ async function launchSelectedGame() {
   elements.launchButton.disabled = true;
   elements.activityText.textContent = `Launching ${game.title}...`;
   await loadGameBridgeProfile(game);
-  const result = await api.launchGame(game);
+  const result = await api.launchGame({
+    ...game,
+    launchArgs: getGameProfile(game).launchArgs || game.launchArgs || ""
+  });
   elements.launchButton.disabled = false;
 
   if (result.ok) {
+    await refreshGameProfiles();
     showToast(result.message);
     elements.activityText.textContent = "Launch request sent.";
   } else {
@@ -391,7 +437,8 @@ function applyFilters() {
 
   state.filteredGames = state.games.filter((game) => {
     const matchesQuery = !query || `${game.title} ${game.source} ${game.launchType}`.toLowerCase().includes(query);
-    return matchesQuery;
+    const profile = getGameProfile(game);
+    return matchesQuery && (!profile.hidden || state.appSettings.showHiddenLaunchers);
   });
 
   if (state.selectedIndex >= state.filteredGames.length) {
@@ -413,14 +460,17 @@ function renderLoading() {
 
 function render() {
   applyFilters();
+  applyTheme();
   document.body.classList.toggle("settings-mode", state.activeView === "settings");
   document.body.classList.toggle("apps-mode", state.activeView === "library");
   document.body.classList.toggle("reduce-motion", Boolean(state.appSettings.reduceMotion));
+  document.body.classList.toggle("quick-menu-open", Boolean(state.quickMenuOpen));
   renderHero();
   renderContent();
   renderController();
   renderViewTitle();
   renderFullscreenButton();
+  renderQuickMenu();
   restoreControllerFocus();
 }
 
@@ -455,7 +505,11 @@ function renderHero() {
 
   elements.heroSource.textContent = game.source;
   elements.heroTitle.textContent = game.title;
-  elements.heroPath.textContent = game.installPath || game.launchTarget || "Local game";
+  const profile = getGameProfile(game);
+  elements.heroPath.textContent = [
+    profile.accountLabel ? `Account: ${profile.accountLabel}` : "",
+    game.installPath || game.launchTarget || "Local game"
+  ].filter(Boolean).join("  |  ");
   elements.sourceStatus.textContent = game.source;
 
   if (shouldUseHeroArtwork(game)) {
@@ -486,7 +540,11 @@ function renderHome() {
   }
 
   const sources = getSourceStats();
-  const featuredGames = state.filteredGames.slice(0, 8);
+  const continueGames = getRecentlyPlayedGames().slice(0, 6);
+  const continueIds = new Set(continueGames.map((game) => game.id));
+  const favoriteGames = getFavoriteGames().filter((game) => !continueIds.has(game.id)).slice(0, 8);
+  const usedIds = new Set([...continueGames, ...favoriteGames].map((game) => game.id));
+  const featuredGames = getVisibleGames().filter((game) => !usedIds.has(game.id)).slice(0, 8);
   elements.gameGrid.innerHTML = `
     <div class="home-dashboard">
       <section class="summary-strip">
@@ -497,18 +555,30 @@ function renderHome() {
           </div>
         `).join("")}
       </section>
-      <section class="section-block">
-        <div class="section-title">
-          <strong>Ready To Launch</strong>
-          <span>${featuredGames.length} shown</span>
-        </div>
-        <div class="game-grid-inner home-grid-inner">
-          ${featuredGames.map((game, index) => renderGameCard(game, index)).join("")}
-        </div>
-      </section>
+      ${renderGameRow("Continue", continueGames, "Recently played")}
+      ${renderGameRow("Favorites", favoriteGames, "Pinned games")}
+      ${renderGameRow("Ready To Launch", featuredGames, `${featuredGames.length} shown`)}
     </div>
   `;
   scrollSelectedIntoView();
+}
+
+function renderGameRow(title, games, detail) {
+  if (!games.length) {
+    return "";
+  }
+
+  return `
+    <section class="section-block">
+      <div class="section-title">
+        <strong>${escapeHtml(title)}</strong>
+        <span>${escapeHtml(detail)}</span>
+      </div>
+      <div class="game-grid-inner home-grid-inner">
+        ${games.map((game) => renderGameCard(game, getFilteredGameIndex(game.id))).join("")}
+      </div>
+    </section>
+  `;
 }
 
 function renderLibrary() {
@@ -543,25 +613,34 @@ function renderLibrary() {
 function renderSelectedAppPanel(game) {
   const hasImage = Boolean(game && game.artworkUrl);
   const artworkType = getArtworkType(game);
+  const profile = getGameProfile(game);
   return `
     <section class="apps-feature-panel">
       <div class="apps-feature-art ${artworkType}${hasImage ? " has-image" : ""}">
         ${hasImage ? `<img src="${escapeHtml(game.artworkUrl)}" alt="">` : `<span>${escapeHtml(getInitials(game.title))}</span>`}
       </div>
       <div class="apps-feature-copy">
-        <p>${escapeHtml(game.source || "App")}</p>
+        <div class="apps-feature-kicker">
+          <p>${escapeHtml(game.source || "App")}</p>
+          ${profile.favorite ? "<span>Favorite</span>" : ""}
+          ${profile.hidden ? "<span>Hidden</span>" : ""}
+        </div>
         <strong>${escapeHtml(game.title)}</strong>
-        <span>${escapeHtml(game.installPath || game.launchTarget || "Local app")}</span>
-      </div>
-      <div class="apps-feature-actions">
-        <button class="app-action-card play-card" data-action="play-selected">
-          <span>Play</span>
-          <strong>${escapeHtml(game.title)}</strong>
-        </button>
-        <button class="app-action-card preferences-card" data-action="app-preferences">
-          <span>Preferences</span>
-          <strong>Per-app settings</strong>
-        </button>
+        <em>${escapeHtml(game.installPath || game.launchTarget || "Local app")}</em>
+        <div class="game-detail-list">
+          <div><span>Profile</span><b>${escapeHtml(profile.profileName || "Default")}</b></div>
+          <div><span>Account</span><b>${escapeHtml(profile.accountLabel || "Launcher default")}</b></div>
+          <div><span>Played</span><b>${escapeHtml(formatPlayStats(profile))}</b></div>
+          <div><span>Launch</span><b>${escapeHtml(game.launchType || "local")}</b></div>
+        </div>
+        <div class="apps-feature-actions">
+          <button class="app-action-card app-command primary" data-action="play-selected">Play</button>
+          <button class="app-action-card app-command" data-action="app-preferences">Preferences</button>
+          <button class="app-action-card app-command" data-action="toggle-favorite">${profile.favorite ? "Unfavorite" : "Favorite"}</button>
+          <button class="app-action-card app-command" data-action="change-artwork">Artwork</button>
+          <button class="app-action-card app-command" data-action="open-game-folder">Folder</button>
+          <button class="app-action-card app-command ${profile.hidden ? "restore" : "danger"}" data-action="toggle-hidden">${profile.hidden ? "Unhide" : "Hide"}</button>
+        </div>
       </div>
     </section>
   `;
@@ -640,6 +719,7 @@ function renderAppPreferencesPanel(game) {
       ${data.message ? `<div class="preference-note">${escapeHtml(data.message)}</div>` : ""}
       ${data.nativeBindingSupport ? renderNativeBindingSupport(data.nativeBindingSupport) : ""}
       ${preferencePath ? `<div class="preference-path">${escapeHtml(preferencePath)}</div>` : ""}
+      ${renderGameProfileEditor(game)}
       <div class="preference-sections">
         <div class="preference-section">
           <strong>${escapeHtml(data.controlTitle || "Gamepad Buttons")}</strong>
@@ -670,6 +750,40 @@ function renderNativeBindingSupport(support) {
       <strong>${support.supported ? "Native bindings" : "Native bindings unavailable"}</strong><br>
       <span>${escapeHtml(support.message || "No native binding editor is available for this game yet.")}</span>
     </div>
+  `;
+}
+
+function renderGameProfileEditor(game) {
+  const profile = getGameProfile(game);
+  return `
+    <section class="game-profile-editor">
+      <div class="profile-editor-head">
+        <div>
+          <strong>Local Game Profile</strong>
+          <span>Stored only on this PC. Account switching uses labels unless a game exposes editable local account files.</span>
+        </div>
+        <div class="profile-editor-actions">
+          <button class="settings-action compact" data-action="toggle-favorite">${profile.favorite ? "Unfavorite" : "Favorite"}</button>
+          <button class="settings-action compact" data-action="toggle-hidden">${profile.hidden ? "Unhide" : "Hide"}</button>
+          <button class="settings-action compact" data-action="change-artwork">Artwork</button>
+          ${profile.artworkPath ? `<button class="settings-action compact" data-action="reset-artwork">Reset art</button>` : ""}
+        </div>
+      </div>
+      <div class="profile-field-grid">
+        ${renderProfileField("profileName", "Profile name", profile.profileName, "Default")}
+        ${renderProfileField("accountLabel", "Account", profile.accountLabel, "Launcher default")}
+        ${renderProfileField("launchArgs", "Launch arguments", profile.launchArgs, "--fullscreen")}
+      </div>
+    </section>
+  `;
+}
+
+function renderProfileField(field, label, value, placeholder) {
+  return `
+    <label class="profile-field">
+      <span>${escapeHtml(label)}</span>
+      <input class="profile-input" data-profile-field="${escapeHtml(field)}" value="${escapeHtml(value)}" placeholder="${escapeHtml(placeholder)}">
+    </label>
   `;
 }
 
@@ -712,109 +826,191 @@ function renderSettings() {
   const sources = getSourceStats();
   const controllerName = state.controllerName ? trimControllerName(state.controllerName) : "No controller connected";
   elements.gameGrid.innerHTML = `
-    <div class="settings-grid">
-      <section class="settings-card wide settings-hero-card">
-        <strong>Settings</strong>
-        <p>Configure Nova Deck as a local console shell for this Windows user.</p>
+    <div class="settings-page">
+      <section class="settings-hero-card">
+        <div>
+          <strong>Settings</strong>
+          <p>Local console shell controls for this Windows user.</p>
+        </div>
+        <div class="settings-hero-meta">
+          <span>${escapeHtml(controllerName)}</span>
+          <span>${escapeHtml(THEMES.find((theme) => theme.id === state.appSettings.theme)?.label || "Nova")} theme</span>
+        </div>
       </section>
-      <section class="settings-card">
-        <strong>System Startup</strong>
-        <p>Start Nova Deck automatically when this Windows account signs in.</p>
-        ${renderToggleButton("toggle-startup", state.startupEnabled, "Start with Windows")}
+
+      <section class="settings-group">
+        <div class="settings-group-head">
+          <strong>System</strong>
+          <span>Startup, sound, display, and updates.</span>
+        </div>
+        <div class="settings-card-grid">
+          <section class="settings-card">
+            <strong>Startup</strong>
+            ${renderToggleButton("toggle-startup", state.startupEnabled, "Start with Windows")}
+          </section>
+          <section class="settings-card">
+            <strong>Default View</strong>
+            <select class="settings-select" data-app-setting="startView">
+              ${renderSelectOption("home", "Home", state.appSettings.startView)}
+              ${renderSelectOption("library", "Apps", state.appSettings.startView)}
+              ${renderSelectOption("settings", "Settings", state.appSettings.startView)}
+            </select>
+          </section>
+          <section class="settings-card">
+            <strong>Sound Output</strong>
+            <select class="settings-select" data-audio-output>
+              ${renderAudioOptions()}
+            </select>
+          </section>
+          <section class="settings-card">
+            <strong>Display</strong>
+            <button class="settings-action" data-action="fullscreen">${state.isFullscreen ? "Exit fullscreen" : "Enter fullscreen"}</button>
+          </section>
+          <section class="settings-card">
+            <strong>Updates</strong>
+            <p>${escapeHtml(state.updateStatus.message)}</p>
+            ${renderUpdateProgress()}
+            <div class="settings-actions-row">
+              <button class="settings-action" data-action="check-updates"${state.updateStatus.canCheck ? "" : " disabled"}>Check</button>
+              <button class="settings-action" data-action="install-update"${state.updateStatus.canInstall ? "" : " disabled"}>Apply</button>
+            </div>
+          </section>
+        </div>
       </section>
-      <section class="settings-card">
-        <strong>Default View</strong>
-        <p>Choose the first screen Nova Deck opens after it starts.</p>
-        <select class="settings-select" data-app-setting="startView">
-          ${renderSelectOption("home", "Home", state.appSettings.startView)}
-          ${renderSelectOption("library", "All Games", state.appSettings.startView)}
-          ${renderSelectOption("settings", "Settings", state.appSettings.startView)}
-        </select>
-      </section>
-      <section class="settings-card">
-        <strong>Sound Output</strong>
-        <p>Choose the preferred output for Nova Deck sounds and future system audio feedback.</p>
-        <select class="settings-select" data-audio-output>
-          ${renderAudioOptions()}
-        </select>
-      </section>
-      <section class="settings-card">
-        <strong>Display</strong>
-        <p>Use fullscreen for a console-like shell, or windowed while tuning the app.</p>
-        <button class="settings-action" data-action="fullscreen">${state.isFullscreen ? "Exit fullscreen" : "Enter fullscreen"}</button>
-      </section>
-      <section class="settings-card wide controller-card">
-        <div class="settings-card-head">
-          <div>
-            <strong>Controller Mapping</strong>
-            <p>${escapeHtml(controllerName)}</p>
+
+      <section class="settings-group">
+        <div class="settings-group-head">
+          <strong>Controller</strong>
+          <span>Shell navigation, testing, and drift calibration.</span>
+        </div>
+        <section class="settings-card controller-card">
+          <div class="settings-card-head">
+            <div>
+              <strong>Mapping</strong>
+              <p>${escapeHtml(controllerName)}</p>
+            </div>
+            <button class="settings-action compact" data-action="reset-controller-mapping">Reset defaults</button>
           </div>
-          <button class="settings-action compact" data-action="reset-controller-mapping">Reset defaults</button>
+          <div class="controller-tuning">
+            <label>
+              <span>Stick deadzone</span>
+              <input type="range" min="0.10" max="0.95" step="0.05" value="${state.controllerSettings.deadzone}" data-controller-setting="deadzone">
+              <output data-setting-output="deadzone">${Math.round(state.controllerSettings.deadzone * 100)}%</output>
+            </label>
+            <label>
+              <span>Move repeat</span>
+              <input type="range" min="90" max="500" step="10" value="${state.controllerSettings.repeatDelay}" data-controller-setting="repeatDelay">
+              <output data-setting-output="repeatDelay">${Math.round(state.controllerSettings.repeatDelay)}ms</output>
+            </label>
+          </div>
+          <div class="mapping-list">
+            ${renderControllerMappings()}
+          </div>
+        </section>
+        <section class="settings-card controller-test-card">
+          <div class="settings-card-head">
+            <div>
+              <strong>Test + Calibration</strong>
+              <p>Live controller state.</p>
+            </div>
+            <button class="settings-action compact" data-action="calibrate-deadzone">Use current drift</button>
+          </div>
+          ${renderControllerTester()}
+        </section>
+      </section>
+
+      <section class="settings-group">
+        <div class="settings-group-head">
+          <strong>Library</strong>
+          <span>Scanning, hidden apps, sources, and local folders.</span>
         </div>
-        <div class="controller-tuning">
-          <label>
-            <span>Stick deadzone</span>
-            <input type="range" min="0.10" max="0.95" step="0.05" value="${state.controllerSettings.deadzone}" data-controller-setting="deadzone">
-            <output data-setting-output="deadzone">${Math.round(state.controllerSettings.deadzone * 100)}%</output>
-          </label>
-          <label>
-            <span>Move repeat</span>
-            <input type="range" min="90" max="500" step="10" value="${state.controllerSettings.repeatDelay}" data-controller-setting="repeatDelay">
-            <output data-setting-output="repeatDelay">${Math.round(state.controllerSettings.repeatDelay)}ms</output>
-          </label>
-        </div>
-        <div class="mapping-list">
-          ${renderControllerMappings()}
-        </div>
-      </section>
-      <section class="settings-card">
-        <strong>Library Scan</strong>
-        <p>Detect Steam, Epic, Desktop shortcuts, Start Menu games, Xbox-style folders, common game folders, and Minecraft clients.</p>
-        <button class="settings-action" data-action="scan">Rescan now</button>
-      </section>
-      <section class="settings-card">
-        <strong>Detected Sources</strong>
-        <div class="mini-list">
-          ${sources.length ? sources.map((source) => `
-            <div><span>${escapeHtml(source.name)}</span><b>${source.count}</b></div>
-          `).join("") : "<p>No sources detected yet.</p>"}
-        </div>
-      </section>
-      <section class="settings-card">
-        <strong>Manual Games</strong>
-        <p>Add a standalone .exe, .lnk, or .url when a game does not expose itself to Windows cleanly.</p>
-        <button class="settings-action" data-action="add">Add game</button>
-      </section>
-      <section class="settings-card">
-        <strong>Local Data</strong>
-        <p>${escapeHtml(meta.userDataPath || "User data folder unavailable.")}</p>
-        <button class="settings-action" data-action="open-user-data">Open folder</button>
-      </section>
-      <section class="settings-card">
-        <strong>Launcher Mode</strong>
-        <p>Quiet launch minimizes common launchers after starting a game and refocuses the game window when possible.</p>
-        <div class="setting-pill">Quiet mode enabled</div>
-      </section>
-      <section class="settings-card">
-        <strong>Motion</strong>
-        <p>Reduce hover and focus movement for a calmer interface.</p>
-        ${renderToggleButton("toggle-reduce-motion", state.appSettings.reduceMotion, "Reduce motion")}
-      </section>
-      <section class="settings-card">
-        <strong>Updates</strong>
-        <p>${escapeHtml(state.updateStatus.message)}</p>
-        ${renderUpdateProgress()}
-        <div class="settings-actions-row">
-          <button class="settings-action" data-action="check-updates"${state.updateStatus.canCheck ? "" : " disabled"}>Check for updates</button>
-          <button class="settings-action" data-action="install-update"${state.updateStatus.canInstall ? "" : " disabled"}>Restart and apply</button>
+        <div class="settings-card-grid">
+          <section class="settings-card">
+            <strong>Scan</strong>
+            <button class="settings-action" data-action="scan">Rescan now</button>
+          </section>
+          ${renderHiddenGamesPanel()}
+          <section class="settings-card">
+            <strong>Sources</strong>
+            <div class="mini-list">
+              ${sources.length ? sources.map((source) => `
+                <div><span>${escapeHtml(source.name)}</span><b>${source.count}</b></div>
+              `).join("") : "<p>No sources detected yet.</p>"}
+            </div>
+          </section>
+          <section class="settings-card">
+            <strong>Manual Games</strong>
+            <button class="settings-action" data-action="add">Add game</button>
+          </section>
+          <section class="settings-card">
+            <strong>Local Data</strong>
+            <p>${escapeHtml(meta.userDataPath || "User data folder unavailable.")}</p>
+            <button class="settings-action" data-action="open-user-data">Open folder</button>
+          </section>
         </div>
       </section>
-      <section class="settings-card wide">
-        <strong>Game Input Profiles</strong>
-        <p>Nova Deck remaps the shell controls above. Individual games still read controllers directly, so per-game control changes should use the game menu, Steam Input, or a virtual controller driver.</p>
-        <div class="setting-pill neutral">OS mapping active</div>
+
+      <section class="settings-group">
+        <div class="settings-group-head">
+          <strong>Appearance + Power</strong>
+          <span>Themes, motion, launcher mode, and system controls.</span>
+        </div>
+        <div class="settings-card-grid">
+          <section class="settings-card wide">
+            <strong>Themes</strong>
+            <div class="theme-grid">
+              ${THEMES.map(renderThemeChoice).join("")}
+            </div>
+          </section>
+          <section class="settings-card">
+            <strong>Motion</strong>
+            ${renderToggleButton("toggle-reduce-motion", state.appSettings.reduceMotion, "Reduce motion")}
+          </section>
+          <section class="settings-card">
+            <strong>Launcher Mode</strong>
+            <div class="setting-pill">Quiet mode enabled</div>
+          </section>
+          <section class="settings-card wide">
+            <strong>Power Menu</strong>
+            <div class="power-grid">
+              ${renderPowerButton("exit", "Exit Nova Deck")}
+              ${renderPowerButton("restart-app", "Restart Nova Deck")}
+              ${renderPowerButton("sleep", "Sleep PC")}
+              ${renderPowerButton("shutdown", "Shut down PC")}
+              ${renderPowerButton("restart-pc", "Restart PC")}
+            </div>
+          </section>
+          <section class="settings-card wide">
+            <strong>Game Input Profiles</strong>
+            <p>Profiles store favorites, account labels, launch arguments, custom artwork, and bridge mappings locally.</p>
+            <div class="setting-pill neutral">Local profiles active</div>
+          </section>
+        </div>
       </section>
     </div>
+  `;
+}
+
+function renderHiddenGamesPanel() {
+  const hiddenGames = getHiddenGames();
+  return `
+    <section class="settings-card hidden-games-card">
+      <div class="settings-card-head">
+        <div>
+          <strong>Hidden Apps</strong>
+          <p>${hiddenGames.length} hidden</p>
+        </div>
+        ${renderToggleButton("toggle-hidden-launchers", state.appSettings.showHiddenLaunchers, "Reveal")}
+      </div>
+      <div class="hidden-game-list">
+        ${hiddenGames.length ? hiddenGames.map((game) => `
+          <button class="settings-action hidden-game-action" data-action="unhide-game" data-game-id="${escapeHtml(game.id)}">
+            <span>${escapeHtml(game.title)}</span>
+            <b>Unhide</b>
+          </button>
+        `).join("") : "<span>No hidden apps</span>"}
+      </div>
+    </section>
   `;
 }
 
@@ -833,6 +1029,68 @@ function renderControllerMappings() {
       </div>
     `;
   }).join("");
+}
+
+function renderControllerTester() {
+  const snapshot = state.controllerSnapshot || getEmptyControllerSnapshot();
+  const buttons = Array.from({ length: 16 }, (_item, index) => index);
+  return `
+    <div class="controller-test">
+      <div class="stick-map">
+        ${renderStickTest("Left Stick", snapshot.leftX, snapshot.leftY)}
+        ${renderStickTest("Right Stick", snapshot.rightX, snapshot.rightY)}
+      </div>
+      <div class="trigger-map">
+        ${renderTriggerTest("LT / L2", snapshot.leftTrigger)}
+        ${renderTriggerTest("RT / R2", snapshot.rightTrigger)}
+      </div>
+      <div class="button-map">
+        ${buttons.map((button) => `
+          <span class="controller-dot${snapshot.buttons.has(button) ? " active" : ""}" data-controller-button="${button}">
+            ${escapeHtml(formatButton(button))}
+          </span>
+        `).join("")}
+      </div>
+    </div>
+  `;
+}
+
+function renderStickTest(label, x, y) {
+  const dotX = 50 + clampNumber(x, 0, -1, 1) * 38;
+  const dotY = 50 + clampNumber(y, 0, -1, 1) * 38;
+  return `
+    <div class="stick-test" data-stick="${escapeHtml(label)}">
+      <span>${escapeHtml(label)}</span>
+      <div class="stick-pad">
+        <i style="left:${dotX}%; top:${dotY}%"></i>
+      </div>
+      <b>${Math.round(x * 100)} / ${Math.round(y * 100)}</b>
+    </div>
+  `;
+}
+
+function renderTriggerTest(label, value) {
+  const percent = Math.round(clampNumber(value, 0, 0, 1) * 100);
+  return `
+    <div class="trigger-test">
+      <span>${escapeHtml(label)}</span>
+      <div><i style="width:${percent}%"></i></div>
+      <b>${percent}%</b>
+    </div>
+  `;
+}
+
+function renderThemeChoice(theme) {
+  return `
+    <button class="theme-choice theme-${escapeHtml(theme.id)}${state.appSettings.theme === theme.id ? " active" : ""}" data-action="set-theme" data-theme="${escapeHtml(theme.id)}">
+      <span></span>
+      <strong>${escapeHtml(theme.label)}</strong>
+    </button>
+  `;
+}
+
+function renderPowerButton(action, label) {
+  return `<button class="settings-action power-action" data-action="power" data-power-action="${escapeHtml(action)}">${escapeHtml(label)}</button>`;
 }
 
 function renderToggleButton(action, enabled, label) {
@@ -873,11 +1131,62 @@ function renderUpdateProgress() {
   `;
 }
 
+function renderQuickMenu() {
+  if (!state.quickMenuOpen) {
+    elements.quickMenu.classList.add("hidden");
+    elements.quickMenu.innerHTML = "";
+    return;
+  }
+
+  const game = getSelectedGame();
+  const profile = getGameProfile(game);
+  elements.quickMenu.classList.remove("hidden");
+  elements.quickMenu.innerHTML = `
+    <div class="quick-menu-panel">
+      <div class="quick-menu-head">
+        <div>
+          <strong>Quick Menu</strong>
+          <span>${escapeHtml(game ? game.title : "Nova Deck")}</span>
+        </div>
+        <button class="quick-action icon-action" data-action="close-quick-menu" aria-label="Close quick menu">X</button>
+      </div>
+      <div class="quick-game-card">
+        <div class="quick-art ${getArtworkType(game)}${game && game.artworkUrl ? " has-image" : ""}">
+          ${game && game.artworkUrl ? `<img src="${escapeHtml(game.artworkUrl)}" alt="">` : `<span>${escapeHtml(getInitials(game && game.title))}</span>`}
+        </div>
+        <div>
+          <p>${escapeHtml(game ? game.source : "System")}</p>
+          <strong>${escapeHtml(game ? game.title : "Nova Deck")}</strong>
+          <span>${escapeHtml(profile.accountLabel || "Launcher default account")}</span>
+        </div>
+      </div>
+      <div class="quick-action-grid">
+        <button class="quick-action primary" data-action="play-selected">Play</button>
+        <button class="quick-action" data-action="app-preferences">Preferences</button>
+        <button class="quick-action" data-action="toggle-favorite">${profile.favorite ? "Unfavorite" : "Favorite"}</button>
+        <button class="quick-action" data-action="fullscreen">${state.isFullscreen ? "Exit Fullscreen" : "Fullscreen"}</button>
+        <button class="quick-action" data-action="quick-view" data-view="home">Home</button>
+        <button class="quick-action" data-action="quick-view" data-view="library">Apps</button>
+      </div>
+      <div class="quick-power-row">
+        ${renderQuickPowerButton("exit", "Exit")}
+        ${renderQuickPowerButton("restart-app", "Restart App")}
+        ${renderQuickPowerButton("sleep", "Sleep")}
+      </div>
+    </div>
+  `;
+}
+
+function renderQuickPowerButton(action, label) {
+  return `<button class="quick-action compact" data-action="power" data-power-action="${escapeHtml(action)}">${escapeHtml(label)}</button>`;
+}
+
 function renderGameCard(game, index) {
   const selected = index === state.selectedIndex ? " selected" : "";
   const initials = getInitials(game.title);
   const hasImage = Boolean(game.artworkUrl);
   const artworkType = getArtworkType(game);
+  const profile = getGameProfile(game);
   return `
     <button class="game-card${selected}" data-index="${index}" title="${escapeHtml(game.title)}">
       <div class="cover-art ${artworkType}${hasImage ? " has-image" : ""}">
@@ -887,6 +1196,11 @@ function renderGameCard(game, index) {
       <div class="card-copy">
         <div class="card-title">${escapeHtml(game.title)}</div>
         <div class="card-meta">${escapeHtml(game.source)} - ${escapeHtml(game.launchType || "local")}</div>
+        <div class="card-badges">
+          ${profile.favorite ? "<span>Favorite</span>" : ""}
+          ${profile.lastPlayedAt ? `<span>${escapeHtml(formatLastPlayed(profile.lastPlayedAt))}</span>` : ""}
+          ${profile.hidden ? "<span>Hidden</span>" : ""}
+        </div>
       </div>
     </button>
   `;
@@ -987,6 +1301,14 @@ function handleContentClick(event) {
     toggleStartup();
   } else if (action === "toggle-reduce-motion") {
     updateAppSetting("reduceMotion", !state.appSettings.reduceMotion);
+  } else if (action === "toggle-hidden-launchers") {
+    updateAppSetting("showHiddenLaunchers", !state.appSettings.showHiddenLaunchers);
+  } else if (action === "set-theme") {
+    updateAppSetting("theme", actionButton.dataset.theme || "nova");
+  } else if (action === "calibrate-deadzone") {
+    calibrateDeadzoneFromCurrentInput();
+  } else if (action === "power") {
+    runPowerAction(actionButton.dataset.powerAction);
   } else if (action === "check-updates") {
     checkForUpdates();
   } else if (action === "install-update") {
@@ -999,8 +1321,20 @@ function handleContentClick(event) {
     closeAppPreferences();
   } else if (action === "open-preferences-path") {
     api.openPath(actionButton.dataset.path || "");
+  } else if (action === "open-game-folder") {
+    openSelectedGameFolder();
   } else if (action === "toggle-game-preference") {
     updateSelectedGamePreference(actionButton.dataset.prefKey, actionButton.dataset.nextValue);
+  } else if (action === "toggle-favorite") {
+    toggleSelectedFavorite();
+  } else if (action === "toggle-hidden") {
+    toggleSelectedHidden();
+  } else if (action === "unhide-game") {
+    updateGameProfileById(actionButton.dataset.gameId, { hidden: false });
+  } else if (action === "change-artwork") {
+    changeSelectedArtwork();
+  } else if (action === "reset-artwork") {
+    resetSelectedArtwork();
   }
 }
 
@@ -1013,6 +1347,12 @@ function handleContentInput(event) {
       previewJavaBridgePreference(key, preferenceRange.value);
       saveGamePreferenceSoon(key, preferenceRange.value);
     }
+    return;
+  }
+
+  const profileInput = event.target.closest("[data-profile-field]");
+  if (profileInput) {
+    updateLocalProfileField(profileInput.dataset.profileField, profileInput.value);
     return;
   }
 
@@ -1059,6 +1399,12 @@ function handleContentChange(event) {
   const preferenceInput = event.target.closest("[data-pref-key]");
   if (preferenceInput) {
     updateSelectedGamePreference(preferenceInput.dataset.prefKey, preferenceInput.value);
+    return;
+  }
+
+  const profileInput = event.target.closest("[data-profile-field]");
+  if (profileInput) {
+    updateSelectedGameProfile({ [profileInput.dataset.profileField]: profileInput.value }, { silent: true });
   }
 }
 
@@ -1076,6 +1422,12 @@ function handleImageError(event) {
 }
 
 function handleKeyDown(event) {
+  if ((event.key === "q" || event.key === "Q") && !isEditableTarget(event.target)) {
+    event.preventDefault();
+    toggleQuickMenu();
+    return;
+  }
+
   if (event.key === "F11") {
     event.preventDefault();
     toggleFullscreen();
@@ -1121,6 +1473,11 @@ function handleKeyDown(event) {
       break;
     case "Backspace":
     case "Escape":
+      if (state.quickMenuOpen) {
+        event.preventDefault();
+        closeQuickMenu();
+        return;
+      }
       if (state.search) {
         event.preventDefault();
         state.search = "";
@@ -1131,6 +1488,37 @@ function handleKeyDown(event) {
       break;
     default:
       break;
+  }
+}
+
+function handleQuickMenuClick(event) {
+  const actionButton = event.target.closest("[data-action]");
+  if (!actionButton) {
+    return;
+  }
+
+  const action = actionButton.dataset.action;
+  if (action === "close-quick-menu") {
+    closeQuickMenu();
+  } else if (action === "play-selected") {
+    closeQuickMenu();
+    launchSelectedGame();
+  } else if (action === "quick-view") {
+    setView(actionButton.dataset.view || "home", true);
+  } else if (action === "fullscreen") {
+    toggleFullscreen();
+  } else if (action === "app-preferences") {
+    const game = getSelectedGame();
+    closeQuickMenu();
+    setView("library", true);
+    if (game) {
+      selectGameById(game.id);
+    }
+    openAppPreferences();
+  } else if (action === "toggle-favorite") {
+    toggleSelectedFavorite();
+  } else if (action === "power") {
+    runPowerAction(actionButton.dataset.powerAction);
   }
 }
 
@@ -1145,49 +1533,33 @@ function startGamepadLoop() {
 function pollGamepad() {
   if (!navigator.getGamepads) {
     releaseJavaBridgeInputs();
+    resetControllerNavigation();
+    updateControllerSnapshot(null);
     return;
   }
 
   const gamepad = Array.from(navigator.getGamepads()).filter(Boolean)[0];
   if (!gamepad) {
     releaseJavaBridgeInputs();
+    resetControllerNavigation();
+    state.lastButtons.clear();
+    updateControllerSnapshot(null);
     return;
   }
 
   state.controllerName = gamepad.id;
   const now = performance.now();
   if (handleMappingCapture(gamepad)) {
+    resetControllerNavigation();
     return;
   }
 
   if (pollJavaInputBridge(gamepad)) {
+    resetControllerNavigation();
     return;
   }
 
-  const deadzone = state.controllerSettings.deadzone;
-  const repeatDelay = state.controllerSettings.repeatDelay;
-  const axisX = readAxis(gamepad, [0, 6]);
-  const axisY = readAxis(gamepad, [1, 7]);
-  const dpadLeft = isPressed(gamepad, 14);
-  const dpadRight = isPressed(gamepad, 15);
-  const dpadUp = isPressed(gamepad, 12);
-  const dpadDown = isPressed(gamepad, 13);
-
-  if (now - state.lastAxisMove > repeatDelay) {
-    if (axisX > deadzone || dpadRight) {
-      moveControllerFocus("right");
-      state.lastAxisMove = now;
-    } else if (axisX < -deadzone || dpadLeft) {
-      moveControllerFocus("left");
-      state.lastAxisMove = now;
-    } else if (axisY > deadzone || dpadDown) {
-      moveControllerFocus("down");
-      state.lastAxisMove = now;
-    } else if (axisY < -deadzone || dpadUp) {
-      moveControllerFocus("up");
-      state.lastAxisMove = now;
-    }
-  }
+  pollControllerNavigation(gamepad, now);
 
   onMappedActionPress(gamepad, "confirm", activateControllerFocus);
   onMappedActionPress(gamepad, "back", handleBackAction);
@@ -1197,6 +1569,8 @@ function pollGamepad() {
   onMappedActionPress(gamepad, "home", () => setView("home", true));
   onMappedActionPress(gamepad, "library", () => setView("library", true));
   onMappedActionPress(gamepad, "settings", () => setView("settings", true));
+  onMappedActionPress(gamepad, "quickMenu", toggleQuickMenu);
+  updateControllerSnapshot(gamepad);
 }
 
 function onMappedActionPress(gamepad, action, handler) {
@@ -1210,6 +1584,94 @@ function onMappedActionPress(gamepad, action, handler) {
   }
 
   state.lastButtons.set(key, pressed);
+}
+
+function pollControllerNavigation(gamepad, now) {
+  const navigation = readControllerNavigation(gamepad);
+  if (!navigation) {
+    resetControllerNavigation();
+    return;
+  }
+
+  const directionChanged = navigation.direction !== state.controllerNavDirection;
+  const repeatDelay = getControllerNavigationDelay(directionChanged);
+
+  if (directionChanged || now - state.controllerNavLastAt >= repeatDelay) {
+    moveControllerFocus(navigation.direction);
+    state.controllerNavDirection = navigation.direction;
+    state.controllerNavLastAt = now;
+    state.controllerNavRepeats = directionChanged ? 0 : state.controllerNavRepeats + 1;
+  }
+}
+
+function readControllerNavigation(gamepad) {
+  const dpadX = (isPressed(gamepad, 15) ? 1 : 0) - (isPressed(gamepad, 14) ? 1 : 0);
+  const dpadY = (isPressed(gamepad, 13) ? 1 : 0) - (isPressed(gamepad, 12) ? 1 : 0);
+  if (dpadX || dpadY) {
+    return { direction: chooseNavigationDirection(dpadX, dpadY), magnitude: 1 };
+  }
+
+  const deadzone = clampNumber(state.controllerSettings.deadzone, 0.45, 0.15, 0.9);
+  const axisX = applyNavigationDeadzone(readAxis(gamepad, [0, 6]), deadzone);
+  const axisY = applyNavigationDeadzone(readAxis(gamepad, [1, 7]), deadzone);
+  if (!axisX && !axisY) {
+    return null;
+  }
+
+  return {
+    direction: chooseNavigationDirection(axisX, axisY),
+    magnitude: Math.max(Math.abs(axisX), Math.abs(axisY))
+  };
+}
+
+function chooseNavigationDirection(x, y) {
+  const absX = Math.abs(x);
+  const absY = Math.abs(y);
+  const previous = state.controllerNavDirection;
+
+  if (previous && isDirectionStillHeld(previous, x, y) && Math.max(absX, absY) <= Math.min(absX, absY) * CONTROLLER_DIRECTION_BIAS) {
+    return previous;
+  }
+
+  if (absX > absY * CONTROLLER_DIRECTION_BIAS) {
+    return x > 0 ? "right" : "left";
+  }
+  if (absY > absX * CONTROLLER_DIRECTION_BIAS) {
+    return y > 0 ? "down" : "up";
+  }
+  if (previous && isDirectionStillHeld(previous, x, y)) {
+    return previous;
+  }
+  return absX >= absY ? (x > 0 ? "right" : "left") : (y > 0 ? "down" : "up");
+}
+
+function isDirectionStillHeld(direction, x, y) {
+  return (direction === "right" && x > 0)
+    || (direction === "left" && x < 0)
+    || (direction === "down" && y > 0)
+    || (direction === "up" && y < 0);
+}
+
+function applyNavigationDeadzone(value, deadzone) {
+  return Math.abs(value) > deadzone ? value : 0;
+}
+
+function getControllerNavigationDelay(directionChanged) {
+  if (directionChanged) {
+    return 0;
+  }
+
+  const baseDelay = clampNumber(state.controllerSettings.repeatDelay, 180, 90, 500);
+  if (state.controllerNavRepeats === 0) {
+    return Math.max(220, baseDelay + 60);
+  }
+  return Math.max(CONTROLLER_MIN_REPEAT_MS, baseDelay * CONTROLLER_REPEAT_ACCELERATION);
+}
+
+function resetControllerNavigation() {
+  state.controllerNavDirection = "";
+  state.controllerNavLastAt = 0;
+  state.controllerNavRepeats = 0;
 }
 
 function handleMappingCapture(gamepad) {
@@ -1246,6 +1708,86 @@ function readAxis(gamepad, indexes) {
     const value = Number(gamepad.axes[index] || 0);
     return Math.abs(value) > Math.abs(best) ? value : best;
   }, 0);
+}
+
+function updateControllerSnapshot(gamepad) {
+  state.controllerSnapshot = gamepad
+    ? {
+        leftX: clampNumber(readAxis(gamepad, [0]), 0, -1, 1),
+        leftY: clampNumber(readAxis(gamepad, [1]), 0, -1, 1),
+        rightX: clampNumber(readAxis(gamepad, [2]), 0, -1, 1),
+        rightY: clampNumber(readAxis(gamepad, [3]), 0, -1, 1),
+        leftTrigger: gamepad.buttons[6] ? clampNumber(gamepad.buttons[6].value, 0, 0, 1) : 0,
+        rightTrigger: gamepad.buttons[7] ? clampNumber(gamepad.buttons[7].value, 0, 0, 1) : 0,
+        buttons: new Set(getPressedButtons(gamepad))
+      }
+    : getEmptyControllerSnapshot();
+
+  updateControllerTesterDom();
+}
+
+function getEmptyControllerSnapshot() {
+  return {
+    leftX: 0,
+    leftY: 0,
+    rightX: 0,
+    rightY: 0,
+    leftTrigger: 0,
+    rightTrigger: 0,
+    buttons: new Set()
+  };
+}
+
+function updateControllerTesterDom() {
+  if (state.activeView !== "settings") {
+    return;
+  }
+
+  const tester = elements.gameGrid.querySelector(".controller-test");
+  if (!tester) {
+    return;
+  }
+
+  const snapshot = state.controllerSnapshot || getEmptyControllerSnapshot();
+  updateStickDom(tester, "Left Stick", snapshot.leftX, snapshot.leftY);
+  updateStickDom(tester, "Right Stick", snapshot.rightX, snapshot.rightY);
+  const triggers = tester.querySelectorAll(".trigger-test");
+  updateTriggerDom(triggers[0], snapshot.leftTrigger);
+  updateTriggerDom(triggers[1], snapshot.rightTrigger);
+  tester.querySelectorAll("[data-controller-button]").forEach((button) => {
+    button.classList.toggle("active", snapshot.buttons.has(Number(button.dataset.controllerButton)));
+  });
+}
+
+function updateStickDom(tester, label, x, y) {
+  const stick = tester.querySelector(`[data-stick="${CSS.escape(label)}"]`);
+  if (!stick) {
+    return;
+  }
+  const dot = stick.querySelector("i");
+  const output = stick.querySelector("b");
+  if (dot) {
+    dot.style.left = `${50 + x * 38}%`;
+    dot.style.top = `${50 + y * 38}%`;
+  }
+  if (output) {
+    output.textContent = `${Math.round(x * 100)} / ${Math.round(y * 100)}`;
+  }
+}
+
+function updateTriggerDom(trigger, value) {
+  if (!trigger) {
+    return;
+  }
+  const percent = Math.round(clampNumber(value, 0, 0, 1) * 100);
+  const bar = trigger.querySelector("i");
+  const output = trigger.querySelector("b");
+  if (bar) {
+    bar.style.width = `${percent}%`;
+  }
+  if (output) {
+    output.textContent = `${percent}%`;
+  }
 }
 
 function pollJavaInputBridge(gamepad) {
@@ -1479,25 +2021,28 @@ function moveControllerFocus(direction) {
   if (!current) {
     current = getPreferredFocusElement();
     if (!current) {
-      return;
+      return false;
     }
     setControllerFocus(current);
+    return true;
   }
 
   if (current && current.matches("[data-controller-setting], .pref-range") && (direction === "left" || direction === "right")) {
     adjustRangeInput(current, direction === "right" ? 1 : -1);
-    return;
+    return true;
   }
 
   const controls = getFocusableControls();
   if (!controls.length) {
-    return;
+    return false;
   }
 
   const next = findDirectionalFocus(current, controls, direction);
   if (next) {
     setControllerFocus(next);
+    return true;
   }
+  return false;
 }
 
 function activateControllerFocus() {
@@ -1539,6 +2084,11 @@ function activateControllerFocus() {
 }
 
 function handleBackAction() {
+  if (state.quickMenuOpen) {
+    closeQuickMenu();
+    return;
+  }
+
   if (state.mappingCaptureAction) {
     cancelButtonCapture();
     return;
@@ -1576,6 +2126,7 @@ function setControllerFocus(element) {
       state.selectedIndex = nextIndex;
       updateSelectedGameCards();
       renderHero();
+      syncSelectedAppPanel();
     }
   }
 
@@ -1595,6 +2146,7 @@ function restoreControllerFocus() {
   }
 
   element.classList.add("controller-focused");
+  element.focus({ preventScroll: true });
 }
 
 function clearControllerFocus() {
@@ -1629,17 +2181,33 @@ function getPreferredFocusElement(controls = getFocusableControls()) {
     return null;
   }
 
-  if (state.activeView !== "settings") {
-    const selectedCard = elements.gameGrid.querySelector(`.game-card[data-index="${state.selectedIndex}"]`);
-    if (selectedCard && !isDisabledOrHidden(selectedCard)) {
-      return selectedCard;
-    }
+  if (state.activeView === "settings") {
+    return getFirstMatchingControl(controls, [
+      ".toggle-row",
+      ".settings-select",
+      "[data-controller-setting]",
+      ".settings-action"
+    ]) || controls.find((element) => !element.classList.contains("rail-button")) || controls[0];
+  }
+
+  const selectedCard = elements.gameGrid.querySelector(`.game-card[data-index="${state.selectedIndex}"]`);
+  if (selectedCard && !isDisabledOrHidden(selectedCard)) {
+    return selectedCard;
   }
 
   return controls.find((element) => !element.classList.contains("rail-button")) || controls[0];
 }
 
+function getFirstMatchingControl(controls, selectors) {
+  return controls.find((element) => selectors.some((selector) => element.matches(selector))) || null;
+}
+
 function getFocusableControls() {
+  if (state.quickMenuOpen) {
+    return Array.from(elements.quickMenu.querySelectorAll(".quick-action"))
+      .filter((element) => !isDisabledOrHidden(element));
+  }
+
   const selectors = [
     ".rail-button",
     "#searchInput",
@@ -1648,7 +2216,6 @@ function getFocusableControls() {
     "#fullscreenButton",
     "#launchButton",
     "#removeButton",
-    ".source-summary",
     ".filter-chip",
     ".game-card",
     ".app-action-card",
@@ -1658,6 +2225,9 @@ function getFocusableControls() {
     ".settings-action",
     ".toggle-row",
     ".settings-select",
+    ".theme-choice",
+    ".profile-input",
+    ".quick-action",
     "[data-controller-setting]"
   ];
 
@@ -1683,16 +2253,72 @@ function findDirectionalFocus(current, controls, direction) {
       continue;
     }
 
-    const primaryDistance = direction === "left" || direction === "right" ? Math.abs(dx) : Math.abs(dy);
-    const secondaryDistance = direction === "left" || direction === "right" ? Math.abs(dy) : Math.abs(dx);
+    const primaryDistance = getPrimaryDirectionalDistance(currentRect, rect, direction);
+    const secondaryDistance = getSecondaryDirectionalDistance(currentRect, rect, direction);
+    const centerDrift = direction === "left" || direction === "right" ? Math.abs(dy) : Math.abs(dx);
     candidates.push({
       element,
-      score: primaryDistance + secondaryDistance * 1.8
+      score: primaryDistance * 4 + secondaryDistance * 2.4 + centerDrift * 0.18 + getFocusPenalty(element)
     });
   }
 
-  candidates.sort((a, b) => a.score - b.score);
+  candidates.sort((a, b) => a.score - b.score || compareFocusPosition(a.element, b.element, direction));
   return candidates[0] ? candidates[0].element : null;
+}
+
+function getPrimaryDirectionalDistance(currentRect, candidateRect, direction) {
+  if (direction === "right") {
+    return Math.max(0, candidateRect.left - currentRect.right);
+  }
+  if (direction === "left") {
+    return Math.max(0, currentRect.left - candidateRect.right);
+  }
+  if (direction === "down") {
+    return Math.max(0, candidateRect.top - currentRect.bottom);
+  }
+  return Math.max(0, currentRect.top - candidateRect.bottom);
+}
+
+function getSecondaryDirectionalDistance(currentRect, candidateRect, direction) {
+  if (direction === "left" || direction === "right") {
+    return getRangeGap(currentRect.top, currentRect.bottom, candidateRect.top, candidateRect.bottom);
+  }
+  return getRangeGap(currentRect.left, currentRect.right, candidateRect.left, candidateRect.right);
+}
+
+function getRangeGap(leftStart, leftEnd, rightStart, rightEnd) {
+  if (leftEnd < rightStart) {
+    return rightStart - leftEnd;
+  }
+  if (rightEnd < leftStart) {
+    return leftStart - rightEnd;
+  }
+  return 0;
+}
+
+function getFocusPenalty(element) {
+  if (element.classList.contains("rail-button")) {
+    return 24;
+  }
+  if (element === elements.searchInput) {
+    return 12;
+  }
+  return 0;
+}
+
+function compareFocusPosition(left, right, direction) {
+  const leftRect = left.getBoundingClientRect();
+  const rightRect = right.getBoundingClientRect();
+  if (direction === "left") {
+    return rightRect.right - leftRect.right;
+  }
+  if (direction === "right") {
+    return leftRect.left - rightRect.left;
+  }
+  if (direction === "up") {
+    return rightRect.bottom - leftRect.bottom;
+  }
+  return leftRect.top - rightRect.top;
 }
 
 function isInDirection(dx, dy, direction) {
@@ -1751,6 +2377,15 @@ function getFocusKey(element) {
   if (element.classList.contains("app-action-card")) {
     return `app-action:${element.dataset.action || ""}`;
   }
+  if (element.classList.contains("theme-choice")) {
+    return `theme:${element.dataset.theme || ""}`;
+  }
+  if (element.classList.contains("quick-action")) {
+    return `quick:${element.dataset.action || ""}:${element.dataset.view || ""}:${element.dataset.powerAction || ""}`;
+  }
+  if (element.matches("[data-profile-field]")) {
+    return `profile:${element.dataset.profileField || ""}`;
+  }
   if (element.matches("[data-pref-key]")) {
     return `pref:${element.dataset.prefKey || ""}`;
   }
@@ -1771,6 +2406,26 @@ function updateSelectedGameCards() {
   elements.gameGrid.querySelectorAll(".game-card").forEach((card) => {
     card.classList.toggle("selected", Number(card.dataset.index) === state.selectedIndex);
   });
+}
+
+function syncSelectedAppPanel() {
+  if (state.activeView !== "library") {
+    return;
+  }
+
+  const game = getSelectedGame();
+  const featurePanel = elements.gameGrid.querySelector(".apps-feature-panel");
+  if (game && featurePanel) {
+    featurePanel.outerHTML = renderSelectedAppPanel(game);
+  }
+
+  if (state.appPreferences && game && state.appPreferences.gameId !== game.id) {
+    state.appPreferences = null;
+    const preferencesPanel = elements.gameGrid.querySelector(".app-preferences-panel");
+    if (preferencesPanel) {
+      preferencesPanel.remove();
+    }
+  }
 }
 
 function isDisabledOrHidden(element) {
@@ -1874,6 +2529,147 @@ async function installUpdate() {
   if (!started) {
     showToast("No downloaded update is ready yet.");
   }
+}
+
+async function refreshGameProfiles() {
+  await loadGameProfiles();
+  state.games = applyGameProfilesToGames(state.games);
+  applyFilters();
+  render();
+}
+
+async function updateSelectedGameProfile(update, options = {}) {
+  const game = getSelectedGame();
+  if (!game || !api.updateGameProfile) {
+    return;
+  }
+
+  await updateGameProfileById(game.id, update, options);
+}
+
+async function updateGameProfileById(gameId, update, options = {}) {
+  if (!gameId || !api.updateGameProfile) {
+    return;
+  }
+
+  const game = state.games.find((entry) => entry.id === gameId) || state.filteredGames.find((entry) => entry.id === gameId);
+  const nextProfile = normalizeGameProfile(await api.updateGameProfile(gameId, {
+    ...getGameProfile(game || { id: gameId }),
+    ...update
+  }));
+  state.gameProfiles[gameId] = nextProfile;
+  state.games = applyGameProfilesToGames(state.games);
+  applyFilters();
+  if (state.selectedIndex >= state.filteredGames.length) {
+    state.selectedIndex = Math.max(0, state.filteredGames.length - 1);
+  }
+  render();
+  if (!options.silent) {
+    showToast("Game profile saved.");
+  }
+}
+
+function updateLocalProfileField(field, value) {
+  const game = getSelectedGame();
+  if (!game || !field) {
+    return;
+  }
+
+  const profile = normalizeGameProfile({
+    ...getGameProfile(game),
+    [field]: value
+  });
+  state.gameProfiles[game.id] = profile;
+}
+
+function toggleSelectedFavorite() {
+  const game = getSelectedGame();
+  if (game) {
+    updateSelectedGameProfile({ favorite: !getGameProfile(game).favorite });
+  }
+}
+
+function toggleSelectedHidden() {
+  const game = getSelectedGame();
+  if (game) {
+    updateSelectedGameProfile({ hidden: !getGameProfile(game).hidden });
+  }
+}
+
+async function changeSelectedArtwork() {
+  const game = getSelectedGame();
+  if (!game || !api.chooseArtwork) {
+    return;
+  }
+
+  const result = await api.chooseArtwork();
+  if (!result || !result.artworkPath) {
+    return;
+  }
+
+  await updateSelectedGameProfile({ artworkPath: result.artworkPath });
+}
+
+function resetSelectedArtwork() {
+  updateSelectedGameProfile({ artworkPath: "" });
+}
+
+function openSelectedGameFolder() {
+  const game = getSelectedGame();
+  if (game && api.openPath) {
+    api.openPath(game.installPath || game.executablePath || game.launchTarget || "");
+  }
+}
+
+async function calibrateDeadzoneFromCurrentInput() {
+  const snapshot = state.controllerSnapshot || getEmptyControllerSnapshot();
+  const drift = Math.max(
+    Math.abs(snapshot.leftX),
+    Math.abs(snapshot.leftY),
+    Math.abs(snapshot.rightX),
+    Math.abs(snapshot.rightY)
+  );
+  const nextDeadzone = clampNumber(drift + 0.12, state.controllerSettings.deadzone, 0.1, 0.95);
+  const nextSettings = cloneControllerSettings(state.controllerSettings);
+  nextSettings.deadzone = Number(nextDeadzone.toFixed(2));
+  state.controllerSettings = normalizeControllerSettings(await api.updateControllerSettings(nextSettings));
+  render();
+  showToast(`Deadzone set to ${Math.round(state.controllerSettings.deadzone * 100)}%.`);
+}
+
+async function runPowerAction(action) {
+  const labels = {
+    exit: "Exit Nova Deck",
+    "restart-app": "Restart Nova Deck",
+    sleep: "Sleep this PC",
+    shutdown: "Shut down this PC",
+    "restart-pc": "Restart this PC"
+  };
+  const label = labels[action] || "Run power action";
+
+  if (["sleep", "shutdown", "restart-pc"].includes(action) && !window.confirm(`${label}?`)) {
+    return;
+  }
+
+  if (api.runPowerAction) {
+    await api.runPowerAction(action);
+  }
+}
+
+function toggleQuickMenu() {
+  state.quickMenuOpen = !state.quickMenuOpen;
+  render();
+  if (state.quickMenuOpen) {
+    const firstAction = elements.quickMenu.querySelector(".quick-action");
+    if (firstAction) {
+      setControllerFocus(firstAction);
+    }
+  }
+}
+
+function closeQuickMenu() {
+  state.quickMenuOpen = false;
+  render();
 }
 
 async function openAppPreferences() {
@@ -2021,6 +2817,80 @@ function getSelectedGame() {
   return state.filteredGames[state.selectedIndex] || null;
 }
 
+function selectGameById(gameId) {
+  const index = state.filteredGames.findIndex((game) => game.id === gameId);
+  if (index >= 0) {
+    state.selectedIndex = index;
+  }
+}
+
+function getVisibleGames() {
+  return state.games.filter((game) => !getGameProfile(game).hidden || state.appSettings.showHiddenLaunchers);
+}
+
+function getHiddenGames() {
+  return state.games.filter((game) => getGameProfile(game).hidden);
+}
+
+function getFavoriteGames() {
+  return getVisibleGames().filter((game) => getGameProfile(game).favorite);
+}
+
+function getRecentlyPlayedGames() {
+  return getVisibleGames()
+    .filter((game) => getGameProfile(game).lastPlayedAt)
+    .sort((left, right) => getGameProfile(right).lastPlayedAt - getGameProfile(left).lastPlayedAt);
+}
+
+function getFilteredGameIndex(gameId) {
+  const index = state.filteredGames.findIndex((game) => game.id === gameId);
+  return index >= 0 ? index : 0;
+}
+
+function getGameProfile(game) {
+  if (!game || !game.id) {
+    return cloneSettings(DEFAULT_GAME_PROFILE);
+  }
+  return normalizeGameProfile(state.gameProfiles[game.id] || game.profile);
+}
+
+function normalizeGameProfiles(profiles) {
+  if (!profiles || typeof profiles !== "object" || Array.isArray(profiles)) {
+    return {};
+  }
+
+  return Object.fromEntries(
+    Object.entries(profiles).map(([gameId, profile]) => [gameId, normalizeGameProfile(profile)])
+  );
+}
+
+function normalizeGameProfile(profile = {}) {
+  const input = profile && typeof profile === "object" && !Array.isArray(profile) ? profile : {};
+  return {
+    favorite: Boolean(input.favorite),
+    hidden: Boolean(input.hidden),
+    profileName: normalizeOptionalText(input.profileName, 80),
+    accountLabel: normalizeOptionalText(input.accountLabel, 80),
+    launchArgs: normalizeOptionalText(input.launchArgs, 260),
+    artworkPath: normalizeOptionalText(input.artworkPath, 520),
+    lastPlayedAt: normalizePositiveNumber(input.lastPlayedAt),
+    playCount: normalizePositiveNumber(input.playCount)
+  };
+}
+
+function applyGameProfilesToGames(games) {
+  return (Array.isArray(games) ? games : []).map((game) => {
+    const profile = getGameProfile(game);
+    const artworkUrl = profile.artworkPath ? localPathToFileUrl(profile.artworkPath) : game.artworkUrl;
+    return {
+      ...game,
+      profile,
+      artworkUrl,
+      artworkType: profile.artworkPath ? "cover" : game.artworkType
+    };
+  });
+}
+
 function getColumnCount() {
   const grid = elements.gameGrid.querySelector(".apps-grid-inner") || elements.gameGrid.querySelector(".game-grid-inner") || elements.gameGrid;
   const firstCard = grid.querySelector(".game-card");
@@ -2054,7 +2924,7 @@ function scrollPreferencesIntoView() {
 
 function getSourceStats() {
   const stats = new Map();
-  for (const game of state.games) {
+  for (const game of getVisibleGames()) {
     stats.set(game.source, (stats.get(game.source) || 0) + 1);
   }
   return Array.from(stats, ([name, count]) => ({ name, count }))
@@ -2157,6 +3027,7 @@ function normalizeAppSettings(settings) {
   nextSettings.rescanOnStart = typeof input.rescanOnStart === "boolean" ? input.rescanOnStart : DEFAULT_APP_SETTINGS.rescanOnStart;
   nextSettings.reduceMotion = typeof input.reduceMotion === "boolean" ? input.reduceMotion : DEFAULT_APP_SETTINGS.reduceMotion;
   nextSettings.showHiddenLaunchers = typeof input.showHiddenLaunchers === "boolean" ? input.showHiddenLaunchers : DEFAULT_APP_SETTINGS.showHiddenLaunchers;
+  nextSettings.theme = THEMES.some((theme) => theme.id === input.theme) ? input.theme : DEFAULT_APP_SETTINGS.theme;
   return nextSettings;
 }
 
@@ -2228,6 +3099,60 @@ function normalizeText(value, fallback) {
   return typeof value === "string" && value.trim() ? value.trim() : fallback;
 }
 
+function normalizeOptionalText(value, maxLength) {
+  return typeof value === "string" ? value.trim().slice(0, maxLength) : "";
+}
+
+function normalizePositiveNumber(value) {
+  const number = Number(value);
+  return Number.isFinite(number) && number > 0 ? number : 0;
+}
+
+function localPathToFileUrl(filePath) {
+  const text = String(filePath || "").trim();
+  if (!text) {
+    return "";
+  }
+  if (/^file:/i.test(text)) {
+    return text;
+  }
+  return `file:///${text.replace(/\\/g, "/").split("/").map((part, index) => (
+    index === 0 && /^[A-Za-z]:$/.test(part) ? part : encodeURIComponent(part)
+  )).join("/")}`;
+}
+
+function formatPlayStats(profile) {
+  if (!profile || !profile.playCount) {
+    return "Not played yet";
+  }
+  return `${profile.playCount} ${profile.playCount === 1 ? "time" : "times"}${profile.lastPlayedAt ? `, ${formatLastPlayed(profile.lastPlayedAt)}` : ""}`;
+}
+
+function formatLastPlayed(timestamp) {
+  if (!timestamp) {
+    return "";
+  }
+
+  const elapsed = Date.now() - Number(timestamp);
+  const day = 24 * 60 * 60 * 1000;
+  if (elapsed < day) {
+    return "Today";
+  }
+  if (elapsed < day * 2) {
+    return "Yesterday";
+  }
+  if (elapsed < day * 7) {
+    return `${Math.floor(elapsed / day)} days ago`;
+  }
+  return new Intl.DateTimeFormat([], { month: "short", day: "numeric" }).format(new Date(timestamp));
+}
+
+function applyTheme() {
+  for (const theme of THEMES) {
+    document.body.classList.toggle(`theme-${theme.id}`, state.appSettings.theme === theme.id);
+  }
+}
+
 function isEditableTarget(target) {
   if (!target || !target.matches) {
     return false;
@@ -2259,9 +3184,31 @@ function createPreviewApi() {
   let previewControllerSettings = cloneControllerSettings(DEFAULT_CONTROLLER_SETTINGS);
   let previewAppSettings = cloneSettings(DEFAULT_APP_SETTINGS);
   let previewStartupEnabled = false;
+  let previewGameProfiles = {
+    "preview:forza": {
+      favorite: true,
+      hidden: false,
+      profileName: "Wheel + controller",
+      accountLabel: "ThinkLinkYT",
+      launchArgs: "",
+      artworkPath: "",
+      lastPlayedAt: Date.now() - 1000 * 60 * 60 * 5,
+      playCount: 4
+    },
+    "preview:minecraft-java": {
+      favorite: true,
+      hidden: false,
+      profileName: "Java controller bridge",
+      accountLabel: "Microsoft account",
+      launchArgs: "",
+      artworkPath: "",
+      lastPlayedAt: Date.now() - 1000 * 60 * 60 * 24 * 2,
+      playCount: 11
+    }
+  };
   let previewUpdateStatus = normalizeUpdateStatus({
     status: "development",
-    message: "Background ZIP updates run in packaged consumer builds.",
+    message: "Packaged consumer builds use the installed updater.",
     canCheck: false,
     canInstall: false,
     percent: 0
@@ -2563,6 +3510,9 @@ function createPreviewApi() {
       }
       return previewGames.filter((game) => game.custom);
     },
+    async chooseArtwork() {
+      return null;
+    },
     async getControllerSettings() {
       return cloneControllerSettings(previewControllerSettings);
     },
@@ -2577,6 +3527,20 @@ function createPreviewApi() {
       previewAppSettings = normalizeAppSettings(settings);
       return cloneSettings(previewAppSettings);
     },
+    async getGameProfiles() {
+      return cloneSettings(previewGameProfiles);
+    },
+    async updateGameProfile(gameId, update) {
+      const profile = normalizeGameProfile({
+        ...(previewGameProfiles[gameId] || {}),
+        ...(update && typeof update === "object" ? update : {})
+      });
+      previewGameProfiles = {
+        ...previewGameProfiles,
+        [gameId]: profile
+      };
+      return cloneSettings(profile);
+    },
     async getStartupEnabled() {
       return previewStartupEnabled;
     },
@@ -2590,7 +3554,7 @@ function createPreviewApi() {
     async checkForUpdates() {
       previewUpdateStatus = normalizeUpdateStatus({
         status: "development",
-        message: "Background ZIP updates run in packaged consumer builds.",
+        message: "Packaged consumer builds use the installed updater.",
         canCheck: false,
         canInstall: false,
         percent: 0
@@ -2688,6 +3652,12 @@ function createPreviewApi() {
       return () => {};
     },
     async launchGame(game) {
+      const profile = previewGameProfiles[game.id] || {};
+      previewGameProfiles[game.id] = normalizeGameProfile({
+        ...profile,
+        playCount: Number(profile.playCount || 0) + 1,
+        lastPlayedAt: Date.now()
+      });
       return {
         ok: true,
         message: `Preview launch: ${game.title}.`
@@ -2706,6 +3676,9 @@ function createPreviewApi() {
     },
     async openPath() {
       return false;
+    },
+    async runPowerAction() {
+      return true;
     },
     onFullscreenChanged(callback) {
       const listener = () => callback(Boolean(document.fullscreenElement));

@@ -8,7 +8,8 @@ const DEFAULT_APP_SETTINGS = {
   startView: "home",
   rescanOnStart: true,
   reduceMotion: false,
-  showHiddenLaunchers: false
+  showHiddenLaunchers: false,
+  theme: "nova"
 };
 
 const DEFAULT_CONTROLLER_SETTINGS = {
@@ -22,7 +23,8 @@ const DEFAULT_CONTROLLER_SETTINGS = {
     fullscreen: { label: "Toggle Fullscreen", buttons: [9] },
     home: { label: "Home View", buttons: [8] },
     library: { label: "All Games View", buttons: [4] },
-    settings: { label: "Settings View", buttons: [5] }
+    settings: { label: "Settings View", buttons: [5] },
+    quickMenu: { label: "Quick Menu", buttons: [16] }
   }
 };
 
@@ -37,7 +39,8 @@ function createStore(userDataPath) {
           customGames: [],
           controllerSettings: normalizeControllerSettings(),
           appSettings: normalizeAppSettings(),
-          gamePreferences: {}
+          gamePreferences: {},
+          gameProfiles: {}
         };
       }
 
@@ -46,14 +49,16 @@ function createStore(userDataPath) {
         customGames: Array.isArray(parsed.customGames) ? parsed.customGames : [],
         controllerSettings: normalizeControllerSettings(parsed.controllerSettings),
         appSettings: normalizeAppSettings(parsed.appSettings),
-        gamePreferences: normalizeGamePreferences(parsed.gamePreferences)
+        gamePreferences: normalizeGamePreferences(parsed.gamePreferences),
+        gameProfiles: normalizeGameProfiles(parsed.gameProfiles)
       };
     } catch {
       return {
         customGames: [],
         controllerSettings: normalizeControllerSettings(),
         appSettings: normalizeAppSettings(),
-        gamePreferences: {}
+        gamePreferences: {},
+        gameProfiles: {}
       };
     }
   }
@@ -77,6 +82,14 @@ function createStore(userDataPath) {
 
     getGamePreferenceSettings(gameId) {
       return readStore().gamePreferences[normalizePreferenceId(gameId)] || {};
+    },
+
+    getGameProfiles() {
+      return readStore().gameProfiles;
+    },
+
+    getGameProfile(gameId) {
+      return readStore().gameProfiles[normalizePreferenceId(gameId)] || normalizeGameProfile();
     },
 
     updateAppSettings(settings) {
@@ -118,6 +131,30 @@ function createStore(userDataPath) {
       return gamePreferences[preferenceId];
     },
 
+    updateGameProfile(gameId, update) {
+      const current = readStore();
+      const profileId = normalizePreferenceId(gameId);
+      if (!profileId) {
+        return normalizeGameProfile();
+      }
+
+      const currentProfile = current.gameProfiles[profileId] || {};
+      const nextProfile = normalizeGameProfile({
+        ...currentProfile,
+        ...(update && typeof update === "object" && !Array.isArray(update) ? update : {})
+      });
+      const gameProfiles = {
+        ...current.gameProfiles,
+        [profileId]: nextProfile
+      };
+
+      writeStore({
+        ...current,
+        gameProfiles
+      });
+      return nextProfile;
+    },
+
     upsertCustomGame(game) {
       const current = readStore();
       const customGames = current.customGames.filter((entry) => entry.id !== game.id);
@@ -146,6 +183,9 @@ function normalizeAppSettings(settings = {}) {
   const startView = ["home", "library", "settings"].includes(settings.startView)
     ? settings.startView
     : DEFAULT_APP_SETTINGS.startView;
+  const theme = ["nova", "ember", "ocean", "light"].includes(settings.theme)
+    ? settings.theme
+    : DEFAULT_APP_SETTINGS.theme;
 
   return {
     audioOutputId: normalizeString(settings.audioOutputId, DEFAULT_APP_SETTINGS.audioOutputId, 180),
@@ -153,7 +193,8 @@ function normalizeAppSettings(settings = {}) {
     startView,
     rescanOnStart: normalizeBoolean(settings.rescanOnStart, DEFAULT_APP_SETTINGS.rescanOnStart),
     reduceMotion: normalizeBoolean(settings.reduceMotion, DEFAULT_APP_SETTINGS.reduceMotion),
-    showHiddenLaunchers: normalizeBoolean(settings.showHiddenLaunchers, DEFAULT_APP_SETTINGS.showHiddenLaunchers)
+    showHiddenLaunchers: normalizeBoolean(settings.showHiddenLaunchers, DEFAULT_APP_SETTINGS.showHiddenLaunchers),
+    theme
   };
 }
 
@@ -192,6 +233,31 @@ function normalizeStoredPreferenceSettings(settings) {
   return settings && typeof settings === "object" && !Array.isArray(settings) ? settings : {};
 }
 
+function normalizeGameProfiles(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return {};
+  }
+
+  return Object.fromEntries(
+    Object.entries(value)
+      .map(([key, profile]) => [normalizePreferenceId(key), normalizeGameProfile(profile)])
+      .filter(([key]) => Boolean(key))
+  );
+}
+
+function normalizeGameProfile(profile = {}) {
+  return {
+    favorite: normalizeBoolean(profile.favorite, false),
+    hidden: normalizeBoolean(profile.hidden, false),
+    profileName: normalizeOptionalString(profile.profileName, 80),
+    accountLabel: normalizeOptionalString(profile.accountLabel, 80),
+    launchArgs: normalizeOptionalString(profile.launchArgs, 260),
+    artworkPath: normalizeOptionalString(profile.artworkPath, 520),
+    lastPlayedAt: normalizePositiveInteger(profile.lastPlayedAt),
+    playCount: normalizePositiveInteger(profile.playCount)
+  };
+}
+
 function normalizePreferenceId(value) {
   return typeof value === "string" ? value.trim().slice(0, 180) : "";
 }
@@ -209,6 +275,13 @@ function normalizeString(value, fallback, maxLength) {
   }
   const text = value.trim();
   return text ? text.slice(0, maxLength) : fallback;
+}
+
+function normalizeOptionalString(value, maxLength) {
+  if (typeof value !== "string") {
+    return "";
+  }
+  return value.trim().slice(0, maxLength);
 }
 
 function normalizeButtons(value, fallback) {
@@ -229,6 +302,11 @@ function normalizeNumber(value, fallback, min, max) {
     return fallback;
   }
   return Math.min(max, Math.max(min, number));
+}
+
+function normalizePositiveInteger(value) {
+  const number = Number(value);
+  return Number.isInteger(number) && number > 0 ? number : 0;
 }
 
 function ensureDirectory(directoryPath) {
