@@ -10,6 +10,43 @@ let bridgeScriptPath = null;
 let bridgeProfilePath = null;
 let activeBridgeProfile = null;
 
+const ALLOWED_KEY_OUTPUTS = new Set([
+  "key:W",
+  "key:A",
+  "key:S",
+  "key:D",
+  "key:Space",
+  "key:Shift",
+  "key:Control",
+  "key:Tab",
+  "key:Escape",
+  "key:Enter",
+  "key:E",
+  "key:Q",
+  "key:R",
+  "key:F",
+  "key:C",
+  "key:X",
+  "key:Z",
+  "key:I",
+  "key:M",
+  "key:F3",
+  "key:F5",
+  "key:Up",
+  "key:Down",
+  "key:Left",
+  "key:Right",
+  "key:1",
+  "key:2",
+  "key:3",
+  "key:4",
+  "key:5",
+  "key:6",
+  "key:7",
+  "key:8",
+  "key:9"
+]);
+
 function setupInputBridge(options) {
   electronApp = options.app;
   helperScriptPath = path.join(electronApp.getPath("userData"), "input-bridge.ps1");
@@ -183,10 +220,16 @@ function normalizeBridgeProfile(profile) {
     .filter(Boolean)
     .slice(0, 32);
 
+  const targetProcessNames = normalizeTargetTerms(profile.bridgeTargets && profile.bridgeTargets.processNames);
+  const targetTitleTerms = normalizeTargetTerms(profile.bridgeTargets && profile.bridgeTargets.titleTerms);
+
   return {
     enabled: true,
     deadzone: clampNumber(profile.bridge.deadzone, 0.24, 0.1, 0.7),
     lookSensitivity: clampNumber(profile.bridge.lookSensitivity, 1, 0.2, 3),
+    menuCursorSensitivity: clampNumber(profile.bridge.menuCursorSensitivity, 1, 0.4, 3),
+    targetProcessNames,
+    targetTitleTerms,
     controls
   };
 }
@@ -197,7 +240,15 @@ function isAllowedOutput(value) {
     || value === "mouse:right"
     || value === "wheel:up"
     || value === "wheel:down"
-    || /^key:(?:W|A|S|D|Space|Shift|Control|E|Q|F3|F5|Escape|[1-9])$/.test(value);
+    || ALLOWED_KEY_OUTPUTS.has(value);
+}
+
+function normalizeTargetTerms(values) {
+  return (Array.isArray(values) ? values : [])
+    .map((value) => String(value || "").trim().toLowerCase())
+    .filter((value) => value.length >= 2 && value.length <= 80 && /^[a-z0-9_. -]+$/.test(value))
+    .filter((value, index, list) => list.indexOf(value) === index)
+    .slice(0, 16);
 }
 
 function bridgeControlsChanged(leftControls, rightControls) {
@@ -257,11 +308,24 @@ function getVirtualKey(output) {
     "key:Space": 0x20,
     "key:Shift": 0x10,
     "key:Control": 0x11,
+    "key:Tab": 0x09,
     "key:E": 0x45,
     "key:Q": 0x51,
+    "key:R": 0x52,
+    "key:F": 0x46,
+    "key:C": 0x43,
+    "key:X": 0x58,
+    "key:Z": 0x5a,
+    "key:I": 0x49,
+    "key:M": 0x4d,
     "key:F3": 0x72,
     "key:F5": 0x74,
     "key:Escape": 0x1b,
+    "key:Enter": 0x0d,
+    "key:Up": 0x26,
+    "key:Down": 0x28,
+    "key:Left": 0x25,
+    "key:Right": 0x27,
     "key:1": 0x31,
     "key:2": 0x32,
     "key:3": 0x33,
@@ -357,6 +421,37 @@ public static class NovaNativeInputBridge {
     public Int16 sThumbRY;
   }
 
+  [StructLayout(LayoutKind.Sequential)]
+  public struct POINT {
+    public Int32 x;
+    public Int32 y;
+  }
+
+  [StructLayout(LayoutKind.Sequential)]
+  public struct CURSORINFO {
+    public Int32 cbSize;
+    public Int32 flags;
+    public IntPtr hCursor;
+    public POINT ptScreenPos;
+  }
+
+  [StructLayout(LayoutKind.Sequential)]
+  public struct JOYINFOEX {
+    public UInt32 dwSize;
+    public UInt32 dwFlags;
+    public UInt32 dwXpos;
+    public UInt32 dwYpos;
+    public UInt32 dwZpos;
+    public UInt32 dwRpos;
+    public UInt32 dwUpos;
+    public UInt32 dwVpos;
+    public UInt32 dwButtons;
+    public UInt32 dwButtonNumber;
+    public UInt32 dwPOV;
+    public UInt32 dwReserved1;
+    public UInt32 dwReserved2;
+  }
+
   [DllImport("user32.dll", SetLastError=true)]
   public static extern UInt32 SendInput(UInt32 nInputs, INPUT[] pInputs, Int32 cbSize);
 
@@ -368,6 +463,9 @@ public static class NovaNativeInputBridge {
 
   [DllImport("user32.dll", CharSet=CharSet.Unicode)]
   private static extern Int32 GetWindowText(IntPtr hWnd, StringBuilder text, Int32 count);
+
+  [DllImport("user32.dll")]
+  private static extern bool GetCursorInfo(out CURSORINFO cursorInfo);
 
   [DllImport("xinput1_4.dll", EntryPoint="XInputGetState")]
   private static extern UInt32 XInputGetState14(UInt32 dwUserIndex, out XINPUT_STATE pState);
@@ -381,6 +479,12 @@ public static class NovaNativeInputBridge {
   [DllImport("winmm.dll")]
   private static extern UInt32 timeEndPeriod(UInt32 uPeriod);
 
+  [DllImport("winmm.dll")]
+  private static extern UInt32 joyGetNumDevs();
+
+  [DllImport("winmm.dll")]
+  private static extern UInt32 joyGetPosEx(UInt32 uJoyID, ref JOYINFOEX pji);
+
   private const UInt32 INPUT_MOUSE = 0;
   private const UInt32 INPUT_KEYBOARD = 1;
   private const UInt32 KEYEVENTF_KEYUP = 0x0002;
@@ -390,14 +494,30 @@ public static class NovaNativeInputBridge {
   private const UInt32 MOUSEEVENTF_RIGHTDOWN = 0x0008;
   private const UInt32 MOUSEEVENTF_RIGHTUP = 0x0010;
   private const UInt32 MOUSEEVENTF_WHEEL = 0x0800;
-  private static readonly string[] TargetNames = new string[] { "minecraft", "minecraftlauncher", "lunarclient", "badlionclient", "feather", "prismlauncher", "multimc", "atlauncher", "curseforge", "modrinth" };
-  private static readonly string[] TargetTitleTerms = new string[] { "minecraft", "lunar client", "badlion", "feather client", "prism launcher", "multimc", "atlauncher", "curseforge", "modrinth" };
+  private const UInt32 JOY_RETURNALL = 0x000000FF;
+  private const UInt32 JOYERR_NOERROR = 0;
+  private const UInt32 JOY_POVCENTERED = 0xFFFF;
+  private const Int32 CURSOR_SHOWING = 0x00000001;
+  private static readonly string[] DefaultTargetNames = new string[] { "minecraft", "minecraftlauncher", "javaw", "java", "lunarclient", "badlionclient", "feather", "prismlauncher", "multimc", "atlauncher", "curseforge", "modrinth" };
+  private static readonly string[] DefaultTargetTitleTerms = new string[] { "minecraft", "lunar client", "badlion", "feather client", "prism launcher", "multimc", "atlauncher", "curseforge", "modrinth" };
 
   private sealed class BridgeProfile {
     public double Deadzone = 0.24;
     public double LookSensitivity = 1.0;
+    public double MenuCursorSensitivity = 1.0;
+    public string[] TargetNames = DefaultTargetNames;
+    public string[] TargetTitleTerms = DefaultTargetTitleTerms;
     public DateTime LastWriteUtc = DateTime.MinValue;
     public Dictionary<int, string> ButtonMap = new Dictionary<int, string>();
+  }
+
+  private sealed class ControllerState {
+    public string Source = "";
+    public double LeftX = 0.0;
+    public double LeftY = 0.0;
+    public double RightX = 0.0;
+    public double RightY = 0.0;
+    public bool[] Buttons = new bool[32];
   }
 
   public static bool GetState(UInt32 index, out XINPUT_STATE state) {
@@ -480,10 +600,14 @@ public static class NovaNativeInputBridge {
     long nextProfileReadMs = 0;
     long nextTargetCheckMs = 0;
     bool targetActive = false;
+    bool menuMode = false;
+    bool lastMenuMode = false;
     double smoothLookX = 0.0;
     double smoothLookY = 0.0;
     double mouseCarryX = 0.0;
     double mouseCarryY = 0.0;
+    double menuCarryX = 0.0;
+    double menuCarryY = 0.0;
 
     timeBeginPeriod(1);
     try {
@@ -501,12 +625,12 @@ public static class NovaNativeInputBridge {
           nextProfileReadMs = nowMs + 80;
         }
         if (nowMs >= nextTargetCheckMs) {
-          targetActive = IsTargetActive();
+          targetActive = IsTargetActive(profile);
           nextTargetCheckMs = nowMs + 45;
         }
 
-        XINPUT_STATE state;
-        bool connected = GetState(0, out state);
+        ControllerState controller;
+        bool connected = TryGetController(out controller);
         if (!connected || !targetActive) {
           ReleaseAll(heldOutputs);
           buttonStates.Clear();
@@ -514,52 +638,96 @@ public static class NovaNativeInputBridge {
           smoothLookY = 0.0;
           mouseCarryX = 0.0;
           mouseCarryY = 0.0;
+          menuCarryX = 0.0;
+          menuCarryY = 0.0;
           Thread.Sleep(4);
           continue;
         }
 
-        XINPUT_GAMEPAD gamepad = state.Gamepad;
-        double leftX = NormalizeStick(gamepad.sThumbLX);
-        double leftY = -NormalizeStick(gamepad.sThumbLY);
-        double rightX = NormalizeStick(gamepad.sThumbRX);
-        double rightY = -NormalizeStick(gamepad.sThumbRY);
-        double moveThreshold = Math.Min(0.85, profile.Deadzone + 0.06);
-
-        SetHeldOutput(heldOutputs, "move:forward", leftY < -moveThreshold, "key:W");
-        SetHeldOutput(heldOutputs, "move:back", leftY > moveThreshold, "key:S");
-        SetHeldOutput(heldOutputs, "move:left", leftX < -moveThreshold, "key:A");
-        SetHeldOutput(heldOutputs, "move:right", leftX > moveThreshold, "key:D");
-
-        double targetLookX = ApplyLookCurve(ApplyScaledDeadzone(rightX, profile.Deadzone));
-        double targetLookY = ApplyLookCurve(ApplyScaledDeadzone(rightY, profile.Deadzone));
-        double response = 1.0 - Math.Exp(-dt * 24.0);
-        smoothLookX += (targetLookX - smoothLookX) * response;
-        smoothLookY += (targetLookY - smoothLookY) * response;
-        if (Math.Abs(smoothLookX) < 0.0025) smoothLookX = 0.0;
-        if (Math.Abs(smoothLookY) < 0.0025) smoothLookY = 0.0;
-
-        mouseCarryX += smoothLookX * 1350.0 * profile.LookSensitivity * dt;
-        mouseCarryY += smoothLookY * 1350.0 * profile.LookSensitivity * dt;
-        int dx = (int)Math.Truncate(mouseCarryX);
-        int dy = (int)Math.Truncate(mouseCarryY);
-        if (dx != 0) mouseCarryX -= dx;
-        if (dy != 0) mouseCarryY -= dy;
-        if (dx != 0 || dy != 0) {
-          MouseMove(Clamp(dx, -80, 80), Clamp(dy, -80, 80));
+        menuMode = IsCursorVisible();
+        if (menuMode != lastMenuMode) {
+          ReleaseAll(heldOutputs);
+          buttonStates.Clear();
+          smoothLookX = 0.0;
+          smoothLookY = 0.0;
+          mouseCarryX = 0.0;
+          mouseCarryY = 0.0;
+          menuCarryX = 0.0;
+          menuCarryY = 0.0;
+          lastMenuMode = menuMode;
         }
 
-        foreach (KeyValuePair<int, string> entry in profile.ButtonMap) {
-          bool pressed = TestButton(entry.Key, gamepad);
-          bool wasPressed = buttonStates.ContainsKey(entry.Key) && buttonStates[entry.Key];
-          string output = entry.Value;
-          if (output == "wheel:up" || output == "wheel:down") {
-            if (pressed && !wasPressed) {
-              Wheel(output == "wheel:up" ? 120 : -120);
-            }
-          } else if (output != "none") {
-            SetHeldOutput(heldOutputs, "button:" + entry.Key.ToString(), pressed, output);
+        double leftX = controller.LeftX;
+        double leftY = controller.LeftY;
+        double rightX = controller.RightX;
+        double rightY = controller.RightY;
+        double moveThreshold = Math.Min(0.85, profile.Deadzone + 0.06);
+
+        if (menuMode) {
+          SetHeldOutput(heldOutputs, "move:forward", false, "key:W");
+          SetHeldOutput(heldOutputs, "move:back", false, "key:S");
+          SetHeldOutput(heldOutputs, "move:left", false, "key:A");
+          SetHeldOutput(heldOutputs, "move:right", false, "key:D");
+
+          double cursorX = Math.Abs(rightX) > Math.Abs(leftX) ? rightX : leftX;
+          double cursorY = Math.Abs(rightY) > Math.Abs(leftY) ? rightY : leftY;
+          cursorX = ApplyLookCurve(ApplyScaledDeadzone(cursorX, Math.Min(0.35, profile.Deadzone)));
+          cursorY = ApplyLookCurve(ApplyScaledDeadzone(cursorY, Math.Min(0.35, profile.Deadzone)));
+          menuCarryX += cursorX * 1650.0 * profile.MenuCursorSensitivity * dt;
+          menuCarryY += cursorY * 1650.0 * profile.MenuCursorSensitivity * dt;
+          int mdx = (int)Math.Truncate(menuCarryX);
+          int mdy = (int)Math.Truncate(menuCarryY);
+          if (mdx != 0) menuCarryX -= mdx;
+          if (mdy != 0) menuCarryY -= mdy;
+          if (mdx != 0 || mdy != 0) {
+            MouseMove(Clamp(mdx, -90, 90), Clamp(mdy, -90, 90));
           }
-          buttonStates[entry.Key] = pressed;
+
+          SetHeldOutput(heldOutputs, "menu:accept-click", IsPressed(controller, 0) || IsPressed(controller, 7), "mouse:left");
+          SetHeldOutput(heldOutputs, "menu:accept-enter", IsPressed(controller, 0), "key:Enter");
+          SetHeldOutput(heldOutputs, "menu:back", IsPressed(controller, 1) || IsPressed(controller, 9), "key:Escape");
+          SetHeldOutput(heldOutputs, "menu:right-click", IsPressed(controller, 6), "mouse:right");
+          SetHeldOutput(heldOutputs, "menu:up", IsPressed(controller, 12), "key:Up");
+          SetHeldOutput(heldOutputs, "menu:down", IsPressed(controller, 13), "key:Down");
+          SetHeldOutput(heldOutputs, "menu:left", IsPressed(controller, 14), "key:Left");
+          SetHeldOutput(heldOutputs, "menu:right", IsPressed(controller, 15), "key:Right");
+        } else {
+          SetHeldOutput(heldOutputs, "move:forward", leftY < -moveThreshold, "key:W");
+          SetHeldOutput(heldOutputs, "move:back", leftY > moveThreshold, "key:S");
+          SetHeldOutput(heldOutputs, "move:left", leftX < -moveThreshold, "key:A");
+          SetHeldOutput(heldOutputs, "move:right", leftX > moveThreshold, "key:D");
+
+          double targetLookX = ApplyLookCurve(ApplyScaledDeadzone(rightX, profile.Deadzone));
+          double targetLookY = ApplyLookCurve(ApplyScaledDeadzone(rightY, profile.Deadzone));
+          double response = 1.0 - Math.Exp(-dt * 24.0);
+          smoothLookX += (targetLookX - smoothLookX) * response;
+          smoothLookY += (targetLookY - smoothLookY) * response;
+          if (Math.Abs(smoothLookX) < 0.0025) smoothLookX = 0.0;
+          if (Math.Abs(smoothLookY) < 0.0025) smoothLookY = 0.0;
+
+          mouseCarryX += smoothLookX * 1350.0 * profile.LookSensitivity * dt;
+          mouseCarryY += smoothLookY * 1350.0 * profile.LookSensitivity * dt;
+          int dx = (int)Math.Truncate(mouseCarryX);
+          int dy = (int)Math.Truncate(mouseCarryY);
+          if (dx != 0) mouseCarryX -= dx;
+          if (dy != 0) mouseCarryY -= dy;
+          if (dx != 0 || dy != 0) {
+            MouseMove(Clamp(dx, -80, 80), Clamp(dy, -80, 80));
+          }
+
+          foreach (KeyValuePair<int, string> entry in profile.ButtonMap) {
+            bool pressed = IsPressed(controller, entry.Key);
+            bool wasPressed = buttonStates.ContainsKey(entry.Key) && buttonStates[entry.Key];
+            string output = entry.Value;
+            if (output == "wheel:up" || output == "wheel:down") {
+              if (pressed && !wasPressed) {
+                Wheel(output == "wheel:up" ? 120 : -120);
+              }
+            } else if (output != "none") {
+              SetHeldOutput(heldOutputs, "button:" + entry.Key.ToString(), pressed, output);
+            }
+            buttonStates[entry.Key] = pressed;
+          }
         }
 
         Thread.Sleep(2);
@@ -568,6 +736,95 @@ public static class NovaNativeInputBridge {
       ReleaseAll(heldOutputs);
       timeEndPeriod(1);
     }
+  }
+
+  private static bool TryGetController(out ControllerState controller) {
+    XINPUT_STATE xInputState;
+    if (GetState(0, out xInputState)) {
+      controller = FromXInput(xInputState.Gamepad);
+      return true;
+    }
+
+    UInt32 deviceCount = Math.Min(16, joyGetNumDevs());
+    for (UInt32 index = 0; index < deviceCount; index++) {
+      JOYINFOEX joyInfo = new JOYINFOEX();
+      joyInfo.dwSize = (UInt32)Marshal.SizeOf(typeof(JOYINFOEX));
+      joyInfo.dwFlags = JOY_RETURNALL;
+      if (joyGetPosEx(index, ref joyInfo) == JOYERR_NOERROR) {
+        controller = FromJoystick(joyInfo);
+        return true;
+      }
+    }
+
+    controller = null;
+    return false;
+  }
+
+  private static ControllerState FromXInput(XINPUT_GAMEPAD gamepad) {
+    ControllerState controller = new ControllerState();
+    controller.Source = "XInput";
+    controller.LeftX = NormalizeStick(gamepad.sThumbLX);
+    controller.LeftY = -NormalizeStick(gamepad.sThumbLY);
+    controller.RightX = NormalizeStick(gamepad.sThumbRX);
+    controller.RightY = -NormalizeStick(gamepad.sThumbRY);
+    int buttons = gamepad.wButtons;
+    controller.Buttons[0] = (buttons & 0x1000) != 0;
+    controller.Buttons[1] = (buttons & 0x2000) != 0;
+    controller.Buttons[2] = (buttons & 0x4000) != 0;
+    controller.Buttons[3] = (buttons & 0x8000) != 0;
+    controller.Buttons[4] = (buttons & 0x0100) != 0;
+    controller.Buttons[5] = (buttons & 0x0200) != 0;
+    controller.Buttons[6] = gamepad.bLeftTrigger > 30;
+    controller.Buttons[7] = gamepad.bRightTrigger > 30;
+    controller.Buttons[8] = (buttons & 0x0020) != 0;
+    controller.Buttons[9] = (buttons & 0x0010) != 0;
+    controller.Buttons[10] = (buttons & 0x0040) != 0;
+    controller.Buttons[11] = (buttons & 0x0080) != 0;
+    controller.Buttons[12] = (buttons & 0x0001) != 0;
+    controller.Buttons[13] = (buttons & 0x0002) != 0;
+    controller.Buttons[14] = (buttons & 0x0004) != 0;
+    controller.Buttons[15] = (buttons & 0x0008) != 0;
+    return controller;
+  }
+
+  private static ControllerState FromJoystick(JOYINFOEX joyInfo) {
+    ControllerState controller = new ControllerState();
+    controller.Source = "Joystick";
+    controller.LeftX = NormalizeJoyAxis(joyInfo.dwXpos);
+    controller.LeftY = NormalizeJoyAxis(joyInfo.dwYpos);
+    controller.RightX = NormalizeJoyAxis(joyInfo.dwRpos);
+    controller.RightY = NormalizeJoyAxis(joyInfo.dwUpos);
+    if (Math.Abs(controller.RightX) < 0.04 && Math.Abs(controller.RightY) < 0.04) {
+      controller.RightX = NormalizeJoyAxis(joyInfo.dwZpos);
+      controller.RightY = NormalizeJoyAxis(joyInfo.dwRpos);
+    }
+
+    for (int index = 0; index < 32; index++) {
+      controller.Buttons[index] = (joyInfo.dwButtons & (1u << index)) != 0;
+    }
+
+    if (joyInfo.dwPOV != JOY_POVCENTERED) {
+      UInt32 pov = joyInfo.dwPOV;
+      controller.Buttons[12] = pov >= 31500 || pov <= 4500;
+      controller.Buttons[15] = pov >= 4500 && pov <= 13500;
+      controller.Buttons[13] = pov >= 13500 && pov <= 22500;
+      controller.Buttons[14] = pov >= 22500 && pov <= 31500;
+    }
+
+    return controller;
+  }
+
+  private static bool IsPressed(ControllerState controller, int buttonIndex) {
+    return controller != null
+      && buttonIndex >= 0
+      && buttonIndex < controller.Buttons.Length
+      && controller.Buttons[buttonIndex];
+  }
+
+  private static bool IsCursorVisible() {
+    CURSORINFO cursorInfo = new CURSORINFO();
+    cursorInfo.cbSize = Marshal.SizeOf(typeof(CURSORINFO));
+    return GetCursorInfo(out cursorInfo) && (cursorInfo.flags & CURSOR_SHOWING) != 0;
   }
 
   private static BridgeProfile LoadProfile(string profilePath, BridgeProfile current) {
@@ -582,6 +839,9 @@ public static class NovaNativeInputBridge {
       next.LastWriteUtc = info.LastWriteTimeUtc;
       next.Deadzone = Clamp(ReadDouble(json, "deadzone", current.Deadzone), 0.1, 0.7);
       next.LookSensitivity = Clamp(ReadDouble(json, "lookSensitivity", current.LookSensitivity), 0.2, 3.0);
+      next.MenuCursorSensitivity = Clamp(ReadDouble(json, "menuCursorSensitivity", current.MenuCursorSensitivity), 0.4, 3.0);
+      next.TargetNames = ReadStringArray(json, "targetProcessNames", current.TargetNames);
+      next.TargetTitleTerms = ReadStringArray(json, "targetTitleTerms", current.TargetTitleTerms);
 
       MatchCollection controls = Regex.Matches(json, "\\{\\s*\"buttonIndex\"\\s*:\\s*(\\d+)\\s*,\\s*\"value\"\\s*:\\s*\"([^\"]*)\"\\s*\\}");
       foreach (Match match in controls) {
@@ -604,6 +864,26 @@ public static class NovaNativeInputBridge {
     Match match = Regex.Match(json, "\"" + key + "\"\\s*:\\s*([-0-9.]+)");
     double value;
     return match.Success && Double.TryParse(match.Groups[1].Value, out value) ? value : fallback;
+  }
+
+  private static string[] ReadStringArray(string json, string key, string[] fallback) {
+    Match match = Regex.Match(json, "\"" + key + "\"\\s*:\\s*\\[(.*?)\\]", RegexOptions.Singleline);
+    if (!match.Success) {
+      return fallback != null && fallback.Length > 0 ? fallback : new string[0];
+    }
+
+    List<string> values = new List<string>();
+    foreach (Match valueMatch in Regex.Matches(match.Groups[1].Value, "\"([^\"]+)\"")) {
+      string value = valueMatch.Groups[1].Value.Trim().ToLowerInvariant();
+      if (value.Length >= 2 && value.Length <= 80 && Regex.IsMatch(value, "^[a-z0-9_. -]+$") && !values.Contains(value)) {
+        values.Add(value);
+      }
+      if (values.Count >= 16) {
+        break;
+      }
+    }
+
+    return values.ToArray();
   }
 
   private static bool IsAllowedOutput(string output) {
@@ -662,11 +942,24 @@ public static class NovaNativeInputBridge {
       case "key:Space": return 0x20;
       case "key:Shift": return 0x10;
       case "key:Control": return 0x11;
+      case "key:Tab": return 0x09;
       case "key:E": return 0x45;
       case "key:Q": return 0x51;
+      case "key:R": return 0x52;
+      case "key:F": return 0x46;
+      case "key:C": return 0x43;
+      case "key:X": return 0x58;
+      case "key:Z": return 0x5a;
+      case "key:I": return 0x49;
+      case "key:M": return 0x4d;
       case "key:F3": return 0x72;
       case "key:F5": return 0x74;
       case "key:Escape": return 0x1b;
+      case "key:Enter": return 0x0d;
+      case "key:Up": return 0x26;
+      case "key:Down": return 0x28;
+      case "key:Left": return 0x25;
+      case "key:Right": return 0x27;
       case "key:1": return 0x31;
       case "key:2": return 0x32;
       case "key:3": return 0x33;
@@ -703,13 +996,15 @@ public static class NovaNativeInputBridge {
     }
   }
 
-  private static bool IsTargetActive() {
+  private static bool IsTargetActive(BridgeProfile profile) {
     string name = ForegroundProcessName().ToLowerInvariant();
     string title = ForegroundWindowTitle().ToLowerInvariant();
-    foreach (string targetName in TargetNames) {
+    string[] targetNames = profile != null && profile.TargetNames != null ? profile.TargetNames : DefaultTargetNames;
+    string[] targetTitleTerms = profile != null && profile.TargetTitleTerms != null ? profile.TargetTitleTerms : DefaultTargetTitleTerms;
+    foreach (string targetName in targetNames) {
       if (name == targetName) return true;
     }
-    foreach (string term in TargetTitleTerms) {
+    foreach (string term in targetTitleTerms) {
       if (title.Contains(term)) return true;
     }
     return false;
@@ -717,6 +1012,10 @@ public static class NovaNativeInputBridge {
 
   private static double NormalizeStick(short value) {
     return value >= 0 ? value / 32767.0 : value / 32768.0;
+  }
+
+  private static double NormalizeJoyAxis(UInt32 value) {
+    return Clamp(((double)value - 32767.5) / 32767.5, -1.0, 1.0);
   }
 
   private static double ApplyScaledDeadzone(double value, double zone) {

@@ -731,6 +731,22 @@ div.source-summary {
   background: rgba(107, 214, 255, 0.06);
 }
 
+.native-binding-note {
+  display: grid;
+  gap: 4px;
+}
+
+.native-binding-note strong {
+  display: block;
+  color: var(--text);
+  font-size: 12px;
+}
+
+.native-binding-note span {
+  display: block;
+  color: var(--muted);
+}
+
 .preference-sections {
   display: grid;
   grid-template-columns: minmax(320px, 1.35fr) minmax(220px, 0.8fr) minmax(240px, 0.85fr);

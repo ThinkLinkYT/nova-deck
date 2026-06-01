@@ -41,11 +41,24 @@ const VIRTUAL_KEY_CODES = {
   "key:Space": 0x20,
   "key:Shift": 0x10,
   "key:Control": 0x11,
+  "key:Tab": 0x09,
+  "key:Enter": 0x0d,
   "key:E": 0x45,
   "key:Q": 0x51,
+  "key:R": 0x52,
+  "key:F": 0x46,
+  "key:C": 0x43,
+  "key:X": 0x58,
+  "key:Z": 0x5a,
+  "key:I": 0x49,
+  "key:M": 0x4d,
   "key:F3": 0x72,
   "key:F5": 0x74,
   "key:Escape": 0x1b,
+  "key:Up": 0x26,
+  "key:Down": 0x28,
+  "key:Left": 0x25,
+  "key:Right": 0x27,
   "key:1": 0x31,
   "key:2": 0x32,
   "key:3": 0x33,
@@ -65,6 +78,9 @@ const DEFAULT_APP_SETTINGS = {
   reduceMotion: false,
   showHiddenLaunchers: false
 };
+
+const INPUT_BRIDGE_KINDS = new Set(["minecraft-java-bridge", "universal-controller-bridge"]);
+const INPUT_BRIDGE_PREFIXES = ["java_bridge.", "universal_bridge."];
 
 const state = {
   games: [],
@@ -622,6 +638,7 @@ function renderAppPreferencesPanel(game) {
         </div>
       </div>
       ${data.message ? `<div class="preference-note">${escapeHtml(data.message)}</div>` : ""}
+      ${data.nativeBindingSupport ? renderNativeBindingSupport(data.nativeBindingSupport) : ""}
       ${preferencePath ? `<div class="preference-path">${escapeHtml(preferencePath)}</div>` : ""}
       <div class="preference-sections">
         <div class="preference-section">
@@ -644,6 +661,15 @@ function renderAppPreferencesPanel(game) {
         </div>
       </div>
     </section>
+  `;
+}
+
+function renderNativeBindingSupport(support) {
+  return `
+    <div class="preference-note native-binding-note">
+      <strong>${support.supported ? "Native bindings" : "Native bindings unavailable"}</strong><br>
+      <span>${escapeHtml(support.message || "No native binding editor is available for this game yet.")}</span>
+    </div>
   `;
 }
 
@@ -983,7 +1009,7 @@ function handleContentInput(event) {
   if (preferenceRange) {
     const key = preferenceRange.dataset.prefKey;
     updatePreferenceOutput(key, preferenceRange.value);
-    if (key && key.startsWith("java_bridge.")) {
+    if (isInputBridgePreferenceKey(key)) {
       previewJavaBridgePreference(key, preferenceRange.value);
       saveGamePreferenceSoon(key, preferenceRange.value);
     }
@@ -1229,7 +1255,7 @@ function pollJavaInputBridge(gamepad) {
     return false;
   }
 
-  if (state.javaBridgeNativeActive && isLikelyXInputGamepad(gamepad)) {
+  if (state.javaBridgeNativeActive) {
     releaseJavaBridgeInputs();
     return true;
   }
@@ -1293,21 +1319,14 @@ function getActiveJavaBridgeProfile() {
   }
 
   const data = state.javaBridgeProfile.data;
-  return data && data.kind === "minecraft-java-bridge" && data.status === "ready" ? data : null;
-}
-
-function isLikelyXInputGamepad(gamepad) {
-  const id = String(gamepad && gamepad.id || "").toLowerCase();
-  return id.includes("xinput")
-    || id.includes("xbox")
-    || id.includes("x-box")
-    || id.includes("x box")
-    || id.includes("360 controller")
-    || id.includes("microsoft");
+  return isInputBridgePreferences(data) ? data : null;
 }
 
 function setJavaBridgeProfile(game, data) {
-  if (!game || !data || data.kind !== "minecraft-java-bridge") {
+  if (!game || !isInputBridgePreferences(data)) {
+    state.javaBridgeProfile = null;
+    releaseJavaBridgeInputs();
+    syncNativeJavaBridge(null);
     return;
   }
 
@@ -1322,6 +1341,14 @@ function setJavaBridgeProfile(game, data) {
   }
 
   syncNativeJavaBridge(data);
+}
+
+function isInputBridgePreferences(data) {
+  return Boolean(data && INPUT_BRIDGE_KINDS.has(data.kind) && data.status === "ready");
+}
+
+function isInputBridgePreferenceKey(key) {
+  return INPUT_BRIDGE_PREFIXES.some((prefix) => String(key || "").startsWith(prefix));
 }
 
 function syncNativeJavaBridge(data) {
@@ -1904,15 +1931,17 @@ function closeAppPreferences() {
 
 function previewJavaBridgePreference(key, value) {
   const game = getSelectedGame();
-  if (!game || !state.appPreferences || !state.appPreferences.data || state.appPreferences.data.kind !== "minecraft-java-bridge") {
+  if (!game || !state.appPreferences || !isInputBridgePreferences(state.appPreferences.data)) {
     return;
   }
 
   const data = cloneSettings(state.appPreferences.data);
-  if (key === "java_bridge.deadzone") {
+  if (key.endsWith(".deadzone")) {
     data.bridge.deadzone = clampNumber(value, data.bridge.deadzone, 0.1, 0.7);
-  } else if (key === "java_bridge.lookSensitivity") {
+  } else if (key.endsWith(".lookSensitivity")) {
     data.bridge.lookSensitivity = clampNumber(value, data.bridge.lookSensitivity, 0.2, 3);
+  } else if (key.endsWith(".menuCursorSensitivity")) {
+    data.bridge.menuCursorSensitivity = clampNumber(value, data.bridge.menuCursorSensitivity, 0.4, 3);
   } else {
     return;
   }
@@ -1956,7 +1985,7 @@ async function updateSelectedGamePreference(key, value, options = {}) {
     render();
   }
   if (!options.silent) {
-    showToast(nextData.kind === "minecraft-java-bridge" ? "Java bridge preference saved." : "Minecraft preference saved. Restart Minecraft if it is open.");
+    showToast(isInputBridgePreferences(nextData) ? "Controller preference saved." : "Minecraft preference saved. Restart Minecraft if it is open.");
   }
 }
 
@@ -2241,6 +2270,7 @@ function createPreviewApi() {
     enabled: false,
     deadzone: 0.24,
     lookSensitivity: 1,
+    menuCursorSensitivity: 1,
     controls: {
       "java_bridge.button0": "key:Space",
       "java_bridge.button1": "key:Shift",
@@ -2260,6 +2290,30 @@ function createPreviewApi() {
       "java_bridge.button15": "key:4"
     }
   };
+  let previewUniversalBridge = {
+    enabled: false,
+    deadzone: 0.24,
+    lookSensitivity: 1,
+    menuCursorSensitivity: 1,
+    controls: {
+      "universal_bridge.button0": "key:Space",
+      "universal_bridge.button1": "key:Escape",
+      "universal_bridge.button2": "key:E",
+      "universal_bridge.button3": "key:R",
+      "universal_bridge.button4": "wheel:up",
+      "universal_bridge.button5": "wheel:down",
+      "universal_bridge.button6": "mouse:right",
+      "universal_bridge.button7": "mouse:left",
+      "universal_bridge.button8": "key:Tab",
+      "universal_bridge.button9": "key:Escape",
+      "universal_bridge.button10": "key:Shift",
+      "universal_bridge.button11": "key:Control",
+      "universal_bridge.button12": "key:Up",
+      "universal_bridge.button13": "key:Down",
+      "universal_bridge.button14": "key:Left",
+      "universal_bridge.button15": "key:Right"
+    }
+  };
   const previewGames = [
     {
       id: "preview:forza",
@@ -2268,6 +2322,7 @@ function createPreviewApi() {
       launchType: "steam",
       launchTarget: "steam://rungameid/1551360",
       installPath: "C:\\Games\\Steam\\Forza Horizon 5",
+      focusProcess: "ForzaHorizon5",
       artworkUrl: "./assets/nova-deck-logo.svg",
       artworkType: "cover",
       custom: false
@@ -2279,6 +2334,7 @@ function createPreviewApi() {
       launchType: "epic",
       launchTarget: "com.epicgames.launcher://apps/example?action=launch&silent=true",
       installPath: "C:\\Games\\Epic\\Hades",
+      focusProcess: "Hades",
       artworkUrl: "./assets/nova-deck-logo.svg",
       artworkType: "cover",
       custom: false
@@ -2301,6 +2357,7 @@ function createPreviewApi() {
       launchType: "exe",
       launchTarget: "C:\\XboxGames\\Minecraft Launcher\\Content\\Minecraft.exe",
       installPath: "C:\\Users\\Player\\AppData\\Roaming\\.minecraft",
+      focusProcess: "Minecraft",
       artworkUrl: "./assets/nova-deck-logo.svg",
       artworkType: "icon",
       custom: false
@@ -2312,6 +2369,7 @@ function createPreviewApi() {
       launchType: "exe",
       launchTarget: "C:\\Games\\Roblox\\RobloxPlayerBeta.exe",
       installPath: "C:\\Games\\Roblox",
+      focusProcess: "RobloxPlayerBeta",
       artworkUrl: "./assets/nova-deck-logo.svg",
       artworkType: "icon",
       custom: false
@@ -2323,6 +2381,7 @@ function createPreviewApi() {
       launchType: "exe",
       launchTarget: "C:\\Games\\Indie Racer\\Racer.exe",
       installPath: "C:\\Games\\Indie Racer",
+      focusProcess: "Racer",
       artworkUrl: "./assets/nova-deck-logo.svg",
       artworkType: "icon",
       custom: true
@@ -2370,6 +2429,61 @@ function createPreviewApi() {
     { value: "key:8", label: "Hotbar 8" },
     { value: "key:9", label: "Hotbar 9" }
   ];
+  const previewUniversalControls = [
+    { key: "universal_bridge.button0", buttonIndex: 0, label: "A / Cross" },
+    { key: "universal_bridge.button1", buttonIndex: 1, label: "B / Circle" },
+    { key: "universal_bridge.button2", buttonIndex: 2, label: "X / Square" },
+    { key: "universal_bridge.button3", buttonIndex: 3, label: "Y / Triangle" },
+    { key: "universal_bridge.button4", buttonIndex: 4, label: "LB / L1" },
+    { key: "universal_bridge.button5", buttonIndex: 5, label: "RB / R1" },
+    { key: "universal_bridge.button6", buttonIndex: 6, label: "LT / L2" },
+    { key: "universal_bridge.button7", buttonIndex: 7, label: "RT / R2" },
+    { key: "universal_bridge.button8", buttonIndex: 8, label: "View / Share" },
+    { key: "universal_bridge.button9", buttonIndex: 9, label: "Menu / Options" },
+    { key: "universal_bridge.button10", buttonIndex: 10, label: "Left Stick" },
+    { key: "universal_bridge.button11", buttonIndex: 11, label: "Right Stick" },
+    { key: "universal_bridge.button12", buttonIndex: 12, label: "D-pad Up" },
+    { key: "universal_bridge.button13", buttonIndex: 13, label: "D-pad Down" },
+    { key: "universal_bridge.button14", buttonIndex: 14, label: "D-pad Left" },
+    { key: "universal_bridge.button15", buttonIndex: 15, label: "D-pad Right" }
+  ];
+  const previewUniversalOutputOptions = [
+    { value: "none", label: "Unassigned" },
+    { value: "mouse:left", label: "Left click" },
+    { value: "mouse:right", label: "Right click" },
+    { value: "wheel:up", label: "Mouse wheel up" },
+    { value: "wheel:down", label: "Mouse wheel down" },
+    { value: "key:Space", label: "Space" },
+    { value: "key:Shift", label: "Shift" },
+    { value: "key:Control", label: "Control" },
+    { value: "key:Tab", label: "Tab" },
+    { value: "key:Escape", label: "Escape" },
+    { value: "key:Enter", label: "Enter" },
+    { value: "key:E", label: "E" },
+    { value: "key:Q", label: "Q" },
+    { value: "key:R", label: "R" },
+    { value: "key:F", label: "F" },
+    { value: "key:C", label: "C" },
+    { value: "key:X", label: "X" },
+    { value: "key:Z", label: "Z" },
+    { value: "key:I", label: "I" },
+    { value: "key:M", label: "M" },
+    { value: "key:F3", label: "F3" },
+    { value: "key:F5", label: "F5" },
+    { value: "key:Up", label: "Arrow up" },
+    { value: "key:Down", label: "Arrow down" },
+    { value: "key:Left", label: "Arrow left" },
+    { value: "key:Right", label: "Arrow right" },
+    { value: "key:1", label: "1" },
+    { value: "key:2", label: "2" },
+    { value: "key:3", label: "3" },
+    { value: "key:4", label: "4" },
+    { value: "key:5", label: "5" },
+    { value: "key:6", label: "6" },
+    { value: "key:7", label: "7" },
+    { value: "key:8", label: "8" },
+    { value: "key:9", label: "9" }
+  ];
 
   const getPreviewJavaPreferences = () => ({
     supported: true,
@@ -2392,7 +2506,42 @@ function createPreviewApi() {
     ],
     sliders: [
       { key: "java_bridge.deadzone", label: "Stick deadzone", min: 0.1, max: 0.7, step: 0.05, value: previewJavaBridge.deadzone },
-      { key: "java_bridge.lookSensitivity", label: "Look sensitivity", min: 0.2, max: 3, step: 0.1, value: previewJavaBridge.lookSensitivity }
+      { key: "java_bridge.lookSensitivity", label: "Look sensitivity", min: 0.2, max: 3, step: 0.1, value: previewJavaBridge.lookSensitivity },
+      { key: "java_bridge.menuCursorSensitivity", label: "Menu cursor speed", min: 0.4, max: 3, step: 0.1, value: previewJavaBridge.menuCursorSensitivity }
+    ]
+  });
+
+  const getPreviewUniversalPreferences = (game) => ({
+    supported: true,
+    kind: "universal-controller-bridge",
+    title: game && game.title ? game.title : "Local Game",
+    status: "ready",
+    message: "For games without solid controller support, Nova Deck can convert the focused game window into keyboard and mouse input.",
+    profileName: game && game.focusProcess ? game.focusProcess : "Window title targeting",
+    controlTitle: "Button Mapping",
+    toggleTitle: "Universal Bridge",
+    sliderTitle: "Sticks",
+    bridge: cloneSettings(previewUniversalBridge),
+    bridgeTargets: {
+      processNames: game && game.focusProcess ? [String(game.focusProcess).toLowerCase()] : [],
+      titleTerms: game && game.title ? [String(game.title).toLowerCase()] : []
+    },
+    nativeBindingSupport: {
+      supported: false,
+      message: "Native in-game binding editing needs a per-game adapter because every game stores controller binds differently."
+    },
+    controls: previewUniversalControls.map((control) => ({
+      ...control,
+      value: previewUniversalBridge.controls[control.key],
+      options: previewUniversalOutputOptions
+    })),
+    toggles: [
+      { key: "universal_bridge.enabled", label: "Universal input bridge", enabled: previewUniversalBridge.enabled }
+    ],
+    sliders: [
+      { key: "universal_bridge.deadzone", label: "Stick deadzone", min: 0.1, max: 0.7, step: 0.05, value: previewUniversalBridge.deadzone },
+      { key: "universal_bridge.lookSensitivity", label: "Look sensitivity", min: 0.2, max: 3, step: 0.1, value: previewUniversalBridge.lookSensitivity },
+      { key: "universal_bridge.menuCursorSensitivity", label: "Menu cursor speed", min: 0.4, max: 3, step: 0.1, value: previewUniversalBridge.menuCursorSensitivity }
     ]
   });
 
@@ -2480,7 +2629,7 @@ function createPreviewApi() {
           ]
         };
       }
-      return { supported: false, message: "Nova Deck does not have a settings editor for this app yet." };
+      return getPreviewUniversalPreferences(game);
     },
     async updateGamePreference(game, update) {
       if (game && game.id === "preview:minecraft-java") {
@@ -2490,6 +2639,8 @@ function createPreviewApi() {
           previewJavaBridge.deadzone = clampNumber(update.value, previewJavaBridge.deadzone, 0.1, 0.7);
         } else if (update && update.key === "java_bridge.lookSensitivity") {
           previewJavaBridge.lookSensitivity = clampNumber(update.value, previewJavaBridge.lookSensitivity, 0.2, 3);
+        } else if (update && update.key === "java_bridge.menuCursorSensitivity") {
+          previewJavaBridge.menuCursorSensitivity = clampNumber(update.value, previewJavaBridge.menuCursorSensitivity, 0.4, 3);
         } else if (update && update.key && update.key.startsWith("java_bridge.button")) {
           const allowedValues = new Set(previewJavaOutputOptions.map((option) => option.value));
           if (allowedValues.has(update.value)) {
@@ -2497,6 +2648,24 @@ function createPreviewApi() {
           }
         }
         return getPreviewJavaPreferences();
+      }
+
+      if (game && !/minecraft/i.test(`${game.title} ${game.source}`)) {
+        if (update && update.key === "universal_bridge.enabled") {
+          previewUniversalBridge.enabled = update.value === "1" || update.value === true;
+        } else if (update && update.key === "universal_bridge.deadzone") {
+          previewUniversalBridge.deadzone = clampNumber(update.value, previewUniversalBridge.deadzone, 0.1, 0.7);
+        } else if (update && update.key === "universal_bridge.lookSensitivity") {
+          previewUniversalBridge.lookSensitivity = clampNumber(update.value, previewUniversalBridge.lookSensitivity, 0.2, 3);
+        } else if (update && update.key === "universal_bridge.menuCursorSensitivity") {
+          previewUniversalBridge.menuCursorSensitivity = clampNumber(update.value, previewUniversalBridge.menuCursorSensitivity, 0.4, 3);
+        } else if (update && update.key && update.key.startsWith("universal_bridge.button")) {
+          const allowedValues = new Set(previewUniversalOutputOptions.map((option) => option.value));
+          if (allowedValues.has(update.value)) {
+            previewUniversalBridge.controls[update.key] = update.value;
+          }
+        }
+        return getPreviewUniversalPreferences(game);
       }
 
       const preferences = await this.getGamePreferences(game);

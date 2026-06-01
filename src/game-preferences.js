@@ -58,6 +58,7 @@ const JAVA_BRIDGE_DEFAULTS = {
   enabled: false,
   deadzone: 0.24,
   lookSensitivity: 1,
+  menuCursorSensitivity: 1,
   controls: {}
 };
 
@@ -105,6 +106,76 @@ const JAVA_BRIDGE_OUTPUT_OPTIONS = [
   { value: "key:9", label: "Hotbar 9" }
 ];
 
+const UNIVERSAL_BRIDGE_DEFAULTS = {
+  enabled: false,
+  deadzone: 0.24,
+  lookSensitivity: 1,
+  menuCursorSensitivity: 1,
+  controls: {}
+};
+
+const UNIVERSAL_BRIDGE_CONTROLS = [
+  { key: "universal_bridge.button0", buttonIndex: 0, label: "A / Cross", defaultValue: "key:Space" },
+  { key: "universal_bridge.button1", buttonIndex: 1, label: "B / Circle", defaultValue: "key:Escape" },
+  { key: "universal_bridge.button2", buttonIndex: 2, label: "X / Square", defaultValue: "key:E" },
+  { key: "universal_bridge.button3", buttonIndex: 3, label: "Y / Triangle", defaultValue: "key:R" },
+  { key: "universal_bridge.button4", buttonIndex: 4, label: "LB / L1", defaultValue: "wheel:up" },
+  { key: "universal_bridge.button5", buttonIndex: 5, label: "RB / R1", defaultValue: "wheel:down" },
+  { key: "universal_bridge.button6", buttonIndex: 6, label: "LT / L2", defaultValue: "mouse:right" },
+  { key: "universal_bridge.button7", buttonIndex: 7, label: "RT / R2", defaultValue: "mouse:left" },
+  { key: "universal_bridge.button8", buttonIndex: 8, label: "View / Share", defaultValue: "key:Tab" },
+  { key: "universal_bridge.button9", buttonIndex: 9, label: "Menu / Options", defaultValue: "key:Escape" },
+  { key: "universal_bridge.button10", buttonIndex: 10, label: "Left Stick", defaultValue: "key:Shift" },
+  { key: "universal_bridge.button11", buttonIndex: 11, label: "Right Stick", defaultValue: "key:Control" },
+  { key: "universal_bridge.button12", buttonIndex: 12, label: "D-pad Up", defaultValue: "key:Up" },
+  { key: "universal_bridge.button13", buttonIndex: 13, label: "D-pad Down", defaultValue: "key:Down" },
+  { key: "universal_bridge.button14", buttonIndex: 14, label: "D-pad Left", defaultValue: "key:Left" },
+  { key: "universal_bridge.button15", buttonIndex: 15, label: "D-pad Right", defaultValue: "key:Right" }
+];
+
+const UNIVERSAL_BRIDGE_OUTPUT_OPTIONS = [
+  { value: "none", label: "Unassigned" },
+  { value: "mouse:left", label: "Left click" },
+  { value: "mouse:right", label: "Right click" },
+  { value: "wheel:up", label: "Mouse wheel up" },
+  { value: "wheel:down", label: "Mouse wheel down" },
+  { value: "key:Space", label: "Space" },
+  { value: "key:Shift", label: "Shift" },
+  { value: "key:Control", label: "Control" },
+  { value: "key:Tab", label: "Tab" },
+  { value: "key:Escape", label: "Escape" },
+  { value: "key:Enter", label: "Enter" },
+  { value: "key:E", label: "E" },
+  { value: "key:Q", label: "Q" },
+  { value: "key:R", label: "R" },
+  { value: "key:F", label: "F" },
+  { value: "key:C", label: "C" },
+  { value: "key:X", label: "X" },
+  { value: "key:Z", label: "Z" },
+  { value: "key:I", label: "I" },
+  { value: "key:M", label: "M" },
+  { value: "key:F3", label: "F3" },
+  { value: "key:F5", label: "F5" },
+  { value: "key:Up", label: "Arrow up" },
+  { value: "key:Down", label: "Arrow down" },
+  { value: "key:Left", label: "Arrow left" },
+  { value: "key:Right", label: "Arrow right" },
+  { value: "key:1", label: "1" },
+  { value: "key:2", label: "2" },
+  { value: "key:3", label: "3" },
+  { value: "key:4", label: "4" },
+  { value: "key:5", label: "5" },
+  { value: "key:6", label: "6" },
+  { value: "key:7", label: "7" },
+  { value: "key:8", label: "8" },
+  { value: "key:9", label: "9" }
+];
+
+const JAVA_BRIDGE_TARGETS = {
+  processNames: ["minecraft", "minecraftlauncher", "javaw", "java", "lunarclient", "badlionclient", "feather", "prismlauncher", "multimc", "atlauncher", "curseforge", "modrinth"],
+  titleTerms: ["minecraft", "lunar client", "badlion", "feather client", "prism launcher", "multimc", "atlauncher", "curseforge", "modrinth"]
+};
+
 const JAVA_CLIENT_TERMS = [
   "minecraft launcher",
   "minecraftlauncher",
@@ -131,6 +202,8 @@ const BEDROCK_UPDATE_KEYS = new Set([
 
 const JAVA_CONTROL_KEYS = new Set(JAVA_BRIDGE_CONTROLS.map((item) => item.key));
 const JAVA_OUTPUT_VALUES = new Set(JAVA_BRIDGE_OUTPUT_OPTIONS.map((item) => item.value));
+const UNIVERSAL_CONTROL_KEYS = new Set(UNIVERSAL_BRIDGE_CONTROLS.map((item) => item.key));
+const UNIVERSAL_OUTPUT_VALUES = new Set(UNIVERSAL_BRIDGE_OUTPUT_OPTIONS.map((item) => item.value));
 
 function getGamePreferences(game, storedSettings = {}) {
   if (isMinecraftBedrockGame(game)) {
@@ -141,12 +214,7 @@ function getGamePreferences(game, storedSettings = {}) {
     return getJavaBridgePreferences(storedSettings);
   }
 
-  return {
-    supported: false,
-    kind: "generic",
-    title: "Preferences",
-    message: "Nova Deck does not have a settings editor for this app yet."
-  };
+  return getUniversalBridgePreferences(game, storedSettings);
 }
 
 function updateGamePreference(game, update, storedSettings = {}) {
@@ -169,9 +237,13 @@ function updateGamePreference(game, update, storedSettings = {}) {
     };
   }
 
+  const nextSettings = {
+    ...storedSettings,
+    universalBridge: updateUniversalBridgeSettings(storedSettings.universalBridge, update)
+  };
   return {
-    preferences: getGamePreferences(game, storedSettings),
-    settings: storedSettings
+    preferences: getGamePreferences(game, nextSettings),
+    settings: nextSettings
   };
 }
 
@@ -235,6 +307,11 @@ function getJavaBridgePreferences(storedSettings = {}) {
     toggleTitle: "Bridge",
     sliderTitle: "Sticks",
     bridge,
+    bridgeTargets: JAVA_BRIDGE_TARGETS,
+    nativeBindingSupport: {
+      supported: false,
+      message: "Vanilla Minecraft Java does not expose built-in controller bindings, so Nova Deck uses this input bridge instead."
+    },
     controls: JAVA_BRIDGE_CONTROLS.map((control) => ({
       ...control,
       value: bridge.controls[control.key],
@@ -263,6 +340,75 @@ function getJavaBridgePreferences(storedSettings = {}) {
         max: 3,
         step: 0.1,
         value: bridge.lookSensitivity
+      },
+      {
+        key: "java_bridge.menuCursorSensitivity",
+        label: "Menu cursor speed",
+        min: 0.4,
+        max: 3,
+        step: 0.1,
+        value: bridge.menuCursorSensitivity
+      }
+    ]
+  };
+}
+
+function getUniversalBridgePreferences(game, storedSettings = {}) {
+  const bridge = normalizeUniversalBridgeSettings(storedSettings.universalBridge);
+  const bridgeTargets = getUniversalBridgeTargets(game);
+
+  return {
+    supported: true,
+    kind: "universal-controller-bridge",
+    title: game && game.title ? game.title : "Local Game",
+    status: "ready",
+    message: "For games without solid controller support, Nova Deck can convert the focused game window into keyboard and mouse input.",
+    profileName: bridgeTargets.processNames.length ? bridgeTargets.processNames.join(", ") : "Window title targeting",
+    controlTitle: "Button Mapping",
+    toggleTitle: "Universal Bridge",
+    sliderTitle: "Sticks",
+    bridge,
+    bridgeTargets,
+    nativeBindingSupport: {
+      supported: false,
+      message: "Native in-game binding editing needs a per-game adapter because every game stores controller binds differently. Nova Deck can add those here as we support specific games."
+    },
+    controls: UNIVERSAL_BRIDGE_CONTROLS.map((control) => ({
+      ...control,
+      value: bridge.controls[control.key],
+      options: UNIVERSAL_BRIDGE_OUTPUT_OPTIONS
+    })),
+    toggles: [
+      {
+        key: "universal_bridge.enabled",
+        label: "Universal input bridge",
+        enabled: bridge.enabled
+      }
+    ],
+    sliders: [
+      {
+        key: "universal_bridge.deadzone",
+        label: "Stick deadzone",
+        min: 0.1,
+        max: 0.7,
+        step: 0.05,
+        value: bridge.deadzone
+      },
+      {
+        key: "universal_bridge.lookSensitivity",
+        label: "Look sensitivity",
+        min: 0.2,
+        max: 3,
+        step: 0.1,
+        value: bridge.lookSensitivity
+      },
+      {
+        key: "universal_bridge.menuCursorSensitivity",
+        label: "Menu cursor speed",
+        min: 0.4,
+        max: 3,
+        step: 0.1,
+        value: bridge.menuCursorSensitivity
       }
     ]
   };
@@ -310,9 +456,65 @@ function updateJavaBridgeSettings(existingSettings, update) {
     };
   }
 
+  if (key === "java_bridge.menuCursorSensitivity") {
+    return {
+      ...current,
+      menuCursorSensitivity: clampNumber(update.value, current.menuCursorSensitivity, 0.4, 3)
+    };
+  }
+
   if (JAVA_CONTROL_KEYS.has(key)) {
     const value = String(update.value || "none");
     if (!JAVA_OUTPUT_VALUES.has(value)) {
+      return current;
+    }
+    return {
+      ...current,
+      controls: {
+        ...current.controls,
+        [key]: value
+      }
+    };
+  }
+
+  return current;
+}
+
+function updateUniversalBridgeSettings(existingSettings, update) {
+  const current = normalizeUniversalBridgeSettings(existingSettings);
+  const key = update && update.key;
+
+  if (key === "universal_bridge.enabled") {
+    return {
+      ...current,
+      enabled: update.value === "1" || update.value === true
+    };
+  }
+
+  if (key === "universal_bridge.deadzone") {
+    return {
+      ...current,
+      deadzone: clampNumber(update.value, current.deadzone, 0.1, 0.7)
+    };
+  }
+
+  if (key === "universal_bridge.lookSensitivity") {
+    return {
+      ...current,
+      lookSensitivity: clampNumber(update.value, current.lookSensitivity, 0.2, 3)
+    };
+  }
+
+  if (key === "universal_bridge.menuCursorSensitivity") {
+    return {
+      ...current,
+      menuCursorSensitivity: clampNumber(update.value, current.menuCursorSensitivity, 0.4, 3)
+    };
+  }
+
+  if (UNIVERSAL_CONTROL_KEYS.has(key)) {
+    const value = String(update.value || "none");
+    if (!UNIVERSAL_OUTPUT_VALUES.has(value)) {
       return current;
     }
     return {
@@ -341,6 +543,26 @@ function normalizeJavaBridgeSettings(settings = {}) {
     enabled: input.enabled === true,
     deadzone: clampNumber(input.deadzone, JAVA_BRIDGE_DEFAULTS.deadzone, 0.1, 0.7),
     lookSensitivity: clampNumber(input.lookSensitivity, JAVA_BRIDGE_DEFAULTS.lookSensitivity, 0.2, 3),
+    menuCursorSensitivity: clampNumber(input.menuCursorSensitivity, JAVA_BRIDGE_DEFAULTS.menuCursorSensitivity, 0.4, 3),
+    controls
+  };
+}
+
+function normalizeUniversalBridgeSettings(settings = {}) {
+  const input = settings && typeof settings === "object" && !Array.isArray(settings) ? settings : {};
+  const inputControls = input.controls && typeof input.controls === "object" ? input.controls : {};
+  const controls = {};
+
+  for (const control of UNIVERSAL_BRIDGE_CONTROLS) {
+    const value = String(inputControls[control.key] || control.defaultValue);
+    controls[control.key] = UNIVERSAL_OUTPUT_VALUES.has(value) ? value : control.defaultValue;
+  }
+
+  return {
+    enabled: input.enabled === true,
+    deadzone: clampNumber(input.deadzone, UNIVERSAL_BRIDGE_DEFAULTS.deadzone, 0.1, 0.7),
+    lookSensitivity: clampNumber(input.lookSensitivity, UNIVERSAL_BRIDGE_DEFAULTS.lookSensitivity, 0.2, 3),
+    menuCursorSensitivity: clampNumber(input.menuCursorSensitivity, UNIVERSAL_BRIDGE_DEFAULTS.menuCursorSensitivity, 0.4, 3),
     controls
   };
 }
@@ -364,6 +586,57 @@ function isMinecraftJavaGame(game) {
 
 function getGameText(game) {
   return `${game && game.title} ${game && game.source} ${game && game.launchType} ${game && game.launchTarget} ${game && game.installPath}`.toLowerCase();
+}
+
+function getUniversalBridgeTargets(game) {
+  const processNames = [];
+  const titleTerms = [];
+  addTargetTerm(processNames, game && game.focusProcess);
+
+  const executableCandidates = [
+    game && game.executablePath,
+    game && game.launchTarget,
+    game && game.installPath
+  ];
+  for (const candidate of executableCandidates) {
+    for (const processName of extractProcessNames(candidate)) {
+      addTargetTerm(processNames, processName);
+    }
+  }
+
+  addTitleTarget(titleTerms, game && game.title);
+  return {
+    processNames,
+    titleTerms
+  };
+}
+
+function extractProcessNames(value) {
+  const text = String(value || "");
+  const matches = Array.from(text.matchAll(/([^\\/:*?"<>|\r\n]+)\.exe\b/gi));
+  return matches
+    .map((match) => match[1])
+    .filter(Boolean);
+}
+
+function addTargetTerm(list, value) {
+  const normalized = String(value || "")
+    .trim()
+    .replace(/\.exe$/i, "")
+    .toLowerCase();
+  if (normalized && /^[a-z0-9_. -]{2,80}$/i.test(normalized) && !list.includes(normalized)) {
+    list.push(normalized);
+  }
+}
+
+function addTitleTarget(list, value) {
+  const normalized = String(value || "")
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, " ");
+  if (normalized && normalized.length >= 3 && normalized.length <= 80 && !list.includes(normalized)) {
+    list.push(normalized);
+  }
 }
 
 function findBedrockOptionsFiles() {
