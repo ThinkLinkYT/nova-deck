@@ -34,6 +34,38 @@ const CONTROLLER_BUTTON_NAMES = {
   16: "Guide"
 };
 
+const WHEEL_DEVICE_TERMS = [
+  "wheel",
+  "racing",
+  "driving force",
+  "g25",
+  "g27",
+  "g29",
+  "g920",
+  "g923",
+  "logitech",
+  "thrustmaster",
+  "t80",
+  "t128",
+  "t150",
+  "t248",
+  "t300",
+  "t500",
+  "tx racing",
+  "tmx",
+  "fanatec",
+  "clubsport",
+  "csl",
+  "direct drive",
+  "moza",
+  "simagic",
+  "pxn",
+  "hori",
+  "turtle beach",
+  "pedal",
+  "shifter"
+];
+
 const VIRTUAL_KEY_CODES = {
   "key:W": 0x57,
   "key:A": 0x41,
@@ -114,6 +146,7 @@ const state = {
   search: "",
   scanning: false,
   controllerName: "",
+  wheelName: "",
   controllerSettings: cloneControllerSettings(DEFAULT_CONTROLLER_SETTINGS),
   appSettings: cloneSettings(DEFAULT_APP_SETTINGS),
   gameProfiles: {},
@@ -153,6 +186,7 @@ const state = {
   controllerFocusKey: "",
   quickMenuOpen: false,
   controllerSnapshot: null,
+  wheelSnapshot: null,
   toastTimer: null
 };
 
@@ -237,11 +271,11 @@ function bindEvents() {
 
   window.addEventListener("keydown", handleKeyDown);
   window.addEventListener("gamepadconnected", (event) => {
-    state.controllerName = event.gamepad.id;
+    refreshInputDeviceNames([event.gamepad]);
     renderController();
   });
   window.addEventListener("gamepaddisconnected", () => {
-    state.controllerName = "";
+    refreshInputDeviceNames();
     releaseJavaBridgeInputs();
     renderController();
   });
@@ -532,44 +566,98 @@ function renderContent() {
 }
 
 function renderHome() {
-  elements.libraryCount.textContent = `${state.games.length} ${state.games.length === 1 ? "game" : "games"} detected`;
+  const visibleGames = getVisibleGames();
+  elements.libraryCount.textContent = `${visibleGames.length} ${visibleGames.length === 1 ? "game" : "games"} ready`;
 
-  if (state.games.length === 0) {
+  if (visibleGames.length === 0) {
     renderEmptyState();
     return;
   }
 
   const sources = getSourceStats();
-  const continueGames = getRecentlyPlayedGames().slice(0, 6);
-  const continueIds = new Set(continueGames.map((game) => game.id));
-  const favoriteGames = getFavoriteGames().filter((game) => !continueIds.has(game.id)).slice(0, 8);
-  const usedIds = new Set([...continueGames, ...favoriteGames].map((game) => game.id));
-  const featuredGames = getVisibleGames().filter((game) => !usedIds.has(game.id)).slice(0, 8);
+  const recentGames = getRecentlyPlayedGames().slice(0, 6);
+  const primaryGame = getHomePrimaryGame();
+  const usedIds = new Set(recentGames.map((game) => game.id));
+  const suggestedGames = getSuggestedGames()
+    .filter((game) => !usedIds.has(game.id))
+    .slice(0, 6);
+  suggestedGames.forEach((game) => usedIds.add(game.id));
+  const pinnedGames = getFavoriteGames()
+    .filter((game) => !usedIds.has(game.id))
+    .slice(0, 6);
+  pinnedGames.forEach((game) => usedIds.add(game.id));
+  const newOptionGames = visibleGames
+    .filter((game) => !usedIds.has(game.id) && !getGameProfile(game).lastPlayedAt)
+    .slice(0, 6);
+
   elements.gameGrid.innerHTML = `
     <div class="home-dashboard">
-      <section class="summary-strip">
-        ${sources.map((source) => `
-          <div class="source-summary">
+      <section class="home-overview">
+        ${renderHomePrimaryCard(primaryGame)}
+        <div class="home-stat-grid">
+          ${renderHomeStat("Ready", visibleGames.length, "local games")}
+          ${renderHomeStat("Recent", getRecentlyPlayedGames().length, "played")}
+          ${renderHomeStat("Pinned", getFavoriteGames().length, "favorites")}
+          ${renderHomeStat("Sources", sources.length, "detected")}
+        </div>
+      </section>
+      <section class="home-source-strip">
+        ${sources.slice(0, 6).map((source) => `
+          <button class="source-summary" data-source-filter="${escapeHtml(source.name)}">
             <strong>${source.count}</strong>
             <span>${escapeHtml(source.name)}</span>
-          </div>
+          </button>
         `).join("")}
       </section>
-      ${renderGameRow("Continue", continueGames, "Recently played")}
-      ${renderGameRow("Favorites", favoriteGames, "Pinned games")}
-      ${renderGameRow("Ready To Launch", featuredGames, `${featuredGames.length} shown`)}
+      ${renderHomeRow("Recent", recentGames, "Pick up where you left off")}
+      ${renderHomeRow("Suggested", suggestedGames, "Good picks from your library")}
+      ${renderHomeRow("Pinned", pinnedGames, "Favorite games")}
+      ${renderHomeRow("New Options", newOptionGames, "Installed and ready")}
     </div>
   `;
-  scrollSelectedIntoView();
+  elements.gameGrid.scrollTop = 0;
+  elements.gameGrid.scrollLeft = 0;
 }
 
-function renderGameRow(title, games, detail) {
+function renderHomePrimaryCard(game) {
+  if (!game) {
+    return "";
+  }
+
+  const index = getFilteredGameIndex(game.id);
+  const profile = getGameProfile(game);
+  const hasImage = Boolean(game.artworkUrl);
+  return `
+    <button class="home-primary-card${index === state.selectedIndex ? " selected" : ""}" data-home-game="${index}">
+      <div class="home-primary-art ${getArtworkType(game)}${hasImage ? " has-image" : ""}">
+        ${hasImage ? `<img src="${escapeHtml(game.artworkUrl)}" alt="">` : `<span>${escapeHtml(getInitials(game.title))}</span>`}
+      </div>
+      <div class="home-primary-copy">
+        <p>Play Next</p>
+        <strong>${escapeHtml(game.title)}</strong>
+        <span>${escapeHtml(getHomePrimaryReason(game, profile))}</span>
+      </div>
+    </button>
+  `;
+}
+
+function renderHomeStat(label, value, detail) {
+  return `
+    <div class="home-stat-card">
+      <span>${escapeHtml(label)}</span>
+      <strong>${escapeHtml(String(value))}</strong>
+      <b>${escapeHtml(detail)}</b>
+    </div>
+  `;
+}
+
+function renderHomeRow(title, games, detail) {
   if (!games.length) {
     return "";
   }
 
   return `
-    <section class="section-block">
+    <section class="section-block home-row">
       <div class="section-title">
         <strong>${escapeHtml(title)}</strong>
         <span>${escapeHtml(detail)}</span>
@@ -752,8 +840,31 @@ function renderAppPreferencesPanel(game) {
             ${(data.sliders || []).map(renderPreferenceSlider).join("")}
           </div>
         </div>
+        ${renderWheelPreferenceSection(data)}
       </div>
     </section>
+  `;
+}
+
+function renderWheelPreferenceSection(data) {
+  const wheelControls = data.wheelControls || [];
+  const wheelSliders = data.wheelSliders || [];
+  if (!wheelControls.length && !wheelSliders.length) {
+    return "";
+  }
+
+  return `
+    <div class="preference-section wheel-preference-section">
+      <strong>${escapeHtml(data.wheelTitle || "Wheel Fallback")}</strong>
+      <div class="wheel-preference-grid">
+        <div class="preference-control-grid">
+          ${wheelControls.map(renderPreferenceControl).join("")}
+        </div>
+        <div class="preference-slider-list">
+          ${wheelSliders.map(renderPreferenceSlider).join("")}
+        </div>
+      </div>
+    </div>
   `;
 }
 
@@ -838,6 +949,7 @@ function renderSettings() {
   const meta = state.meta || {};
   const sources = getSourceStats();
   const controllerName = state.controllerName ? trimControllerName(state.controllerName) : "No controller connected";
+  const wheelName = state.wheelName ? trimControllerName(state.wheelName) : "No wheel detected";
   elements.gameGrid.innerHTML = `
     <div class="settings-page">
       <section class="settings-hero-card">
@@ -847,6 +959,7 @@ function renderSettings() {
         </div>
         <div class="settings-hero-meta">
           <span>${escapeHtml(controllerName)}</span>
+          <span>${escapeHtml(wheelName)}</span>
           <span>${escapeHtml(THEMES.find((theme) => theme.id === state.appSettings.theme)?.label || "Nova")} theme</span>
         </div>
       </section>
@@ -893,8 +1006,8 @@ function renderSettings() {
 
       <section class="settings-group">
         <div class="settings-group-head">
-          <strong>Controller</strong>
-          <span>Shell navigation, testing, and drift calibration.</span>
+          <strong>Input Devices</strong>
+          <span>Shell navigation, controllers, wheels, and calibration.</span>
         </div>
         <section class="settings-card controller-card">
           <div class="settings-card-head">
@@ -929,6 +1042,16 @@ function renderSettings() {
             <button class="settings-action compact" data-action="calibrate-deadzone">Use current drift</button>
           </div>
           ${renderControllerTester()}
+        </section>
+        <section class="settings-card wheel-card">
+          <div class="settings-card-head">
+            <div>
+              <strong>Wheel Support</strong>
+              <p>${escapeHtml(wheelName)}</p>
+            </div>
+            <div class="setting-pill neutral">Native first</div>
+          </div>
+          ${renderWheelTester()}
         </section>
       </section>
 
@@ -1064,6 +1187,53 @@ function renderControllerTester() {
           </span>
         `).join("")}
       </div>
+    </div>
+  `;
+}
+
+function renderWheelTester() {
+  const snapshot = state.wheelSnapshot || getEmptyWheelSnapshot();
+  if (!state.wheelName) {
+    return `
+      <div class="wheel-test empty">
+        <span>No wheel is reporting through the browser yet.</span>
+        <b>Per-game fallback can still use Windows joystick input when a wheel is available.</b>
+      </div>
+    `;
+  }
+
+  return `
+    <div class="wheel-test">
+      ${renderWheelAxis("Steering", snapshot.steer, -1, 1)}
+      ${renderWheelPedal("Throttle", snapshot.throttle)}
+      ${renderWheelPedal("Brake", snapshot.brake)}
+      ${renderWheelPedal("Clutch", snapshot.clutch)}
+      <div class="wheel-meta">
+        <span>${snapshot.axisCount} axes</span>
+        <span>${snapshot.buttonCount} buttons</span>
+      </div>
+    </div>
+  `;
+}
+
+function renderWheelAxis(label, value) {
+  const percent = 50 + clampNumber(value, 0, -1, 1) * 50;
+  return `
+    <div class="wheel-axis" data-wheel-axis="${escapeHtml(label)}">
+      <span>${escapeHtml(label)}</span>
+      <div><i style="left:${percent}%"></i></div>
+      <b>${Math.round(value * 100)}%</b>
+    </div>
+  `;
+}
+
+function renderWheelPedal(label, value) {
+  const percent = Math.round(clampNumber(value, 0, 0, 1) * 100);
+  return `
+    <div class="wheel-pedal" data-wheel-pedal="${escapeHtml(label)}">
+      <span>${escapeHtml(label)}</span>
+      <div><i style="width:${percent}%"></i></div>
+      <b>${percent}%</b>
     </div>
   `;
 }
@@ -1215,13 +1385,29 @@ function renderQuickPowerButton(action, label) {
 }
 
 function getQuickControllerLabel() {
-  if (!state.controllerName) {
+  if (!state.controllerName && !state.wheelName) {
     return "Disconnected";
   }
 
   const snapshot = state.controllerSnapshot || getEmptyControllerSnapshot();
   const pressedCount = snapshot.buttons ? snapshot.buttons.size : 0;
-  return pressedCount > 0 ? `${state.controllerName} • ${pressedCount} pressed` : state.controllerName;
+  if (state.controllerName && state.wheelName && state.controllerName !== state.wheelName) {
+    return `${trimControllerName(state.controllerName)} + wheel`;
+  }
+  if (state.wheelName && (!state.controllerName || state.controllerName === state.wheelName)) {
+    return `Wheel: ${trimControllerName(state.wheelName)}`;
+  }
+  return pressedCount > 0 ? `${trimControllerName(state.controllerName)} • ${pressedCount} pressed` : trimControllerName(state.controllerName);
+}
+
+function getInputStatusLabel() {
+  if (state.controllerName && state.wheelName && state.controllerName !== state.wheelName) {
+    return `${trimControllerName(state.controllerName)} + wheel`;
+  }
+  if (state.wheelName && (!state.controllerName || state.controllerName === state.wheelName)) {
+    return `Wheel: ${trimControllerName(state.wheelName)}`;
+  }
+  return state.controllerName ? trimControllerName(state.controllerName) : "Disconnected";
 }
 
 function getSelectedBridgeLabel(game) {
@@ -1231,6 +1417,9 @@ function getSelectedBridgeLabel(game) {
 
   if (state.javaBridgeProfile && state.javaBridgeProfile.gameId === game.id) {
     const bridge = state.javaBridgeProfile.data && state.javaBridgeProfile.data.bridge;
+    if (bridge && bridge.wheelEnabled) {
+      return "Wheel bridge";
+    }
     return bridge && bridge.enabled ? "Bridge on" : "Game default";
   }
 
@@ -1323,13 +1512,8 @@ function renderViewTitle() {
 }
 
 function renderController() {
-  const gamepads = navigator.getGamepads ? Array.from(navigator.getGamepads()).filter(Boolean) : [];
-  const controller = gamepads[0];
-  if (controller) {
-    state.controllerName = controller.id;
-  }
-
-  elements.controllerStatus.textContent = state.controllerName ? trimControllerName(state.controllerName) : "Disconnected";
+  refreshInputDeviceNames();
+  elements.controllerStatus.textContent = getInputStatusLabel();
 }
 
 function renderFullscreenButton() {
@@ -1339,6 +1523,13 @@ function renderFullscreenButton() {
 }
 
 function handleContentClick(event) {
+  const homeGame = event.target.closest("[data-home-game]");
+  if (homeGame) {
+    state.selectedIndex = Number(homeGame.dataset.homeGame);
+    render();
+    return;
+  }
+
   const card = event.target.closest(".game-card");
   if (card) {
     state.selectedIndex = Number(card.dataset.index);
@@ -1628,19 +1819,23 @@ function pollGamepad() {
     releaseJavaBridgeInputs();
     resetControllerNavigation();
     updateControllerSnapshot(null);
+    updateWheelSnapshot(null);
     return;
   }
 
-  const gamepad = Array.from(navigator.getGamepads()).filter(Boolean)[0];
+  const gamepads = getConnectedGamepads();
+  const gamepad = getPrimaryShellGamepad(gamepads);
+  const wheel = getPrimaryWheelGamepad(gamepads);
+  refreshInputDeviceNames(gamepads);
   if (!gamepad) {
     releaseJavaBridgeInputs();
     resetControllerNavigation();
     state.lastButtons.clear();
     updateControllerSnapshot(null);
+    updateWheelSnapshot(null);
     return;
   }
 
-  state.controllerName = gamepad.id;
   const now = performance.now();
   if (handleMappingCapture(gamepad)) {
     resetControllerNavigation();
@@ -1664,6 +1859,7 @@ function pollGamepad() {
   onMappedActionPress(gamepad, "settings", () => setView("settings", true));
   onMappedActionPress(gamepad, "quickMenu", toggleQuickMenu);
   updateControllerSnapshot(gamepad);
+  updateWheelSnapshot(wheel);
 }
 
 function onMappedActionPress(gamepad, action, handler) {
@@ -1702,6 +1898,10 @@ function readControllerNavigation(gamepad) {
   const dpadY = (isPressed(gamepad, 13) ? 1 : 0) - (isPressed(gamepad, 12) ? 1 : 0);
   if (dpadX || dpadY) {
     return { direction: chooseNavigationDirection(dpadX, dpadY), magnitude: 1 };
+  }
+
+  if (isWheelLikeGamepad(gamepad)) {
+    return null;
   }
 
   const deadzone = clampNumber(state.controllerSettings.deadzone, 0.45, 0.15, 0.9);
@@ -1790,6 +1990,34 @@ function isPressed(gamepad, buttonIndex) {
   return Boolean(gamepad.buttons[buttonIndex] && gamepad.buttons[buttonIndex].pressed);
 }
 
+function getConnectedGamepads() {
+  return navigator.getGamepads ? Array.from(navigator.getGamepads()).filter(Boolean) : [];
+}
+
+function getPrimaryWheelGamepad(gamepads = getConnectedGamepads()) {
+  return gamepads.find(isWheelLikeGamepad) || null;
+}
+
+function getPrimaryShellGamepad(gamepads = getConnectedGamepads()) {
+  return gamepads.find((gamepad) => !isWheelLikeGamepad(gamepad)) || gamepads[0] || null;
+}
+
+function refreshInputDeviceNames(gamepads = getConnectedGamepads()) {
+  const shellGamepad = getPrimaryShellGamepad(gamepads);
+  const wheel = getPrimaryWheelGamepad(gamepads);
+  state.controllerName = shellGamepad ? shellGamepad.id : "";
+  state.wheelName = wheel ? wheel.id : "";
+}
+
+function isWheelLikeGamepad(gamepad) {
+  if (!gamepad || !gamepad.id) {
+    return false;
+  }
+
+  const id = String(gamepad.id).toLowerCase();
+  return WHEEL_DEVICE_TERMS.some((term) => id.includes(term));
+}
+
 function getPressedButtons(gamepad) {
   return gamepad.buttons
     .map((button, index) => (button && button.pressed ? index : null))
@@ -1806,6 +2034,7 @@ function readAxis(gamepad, indexes) {
 function updateControllerSnapshot(gamepad) {
   state.controllerSnapshot = gamepad
     ? {
+        deviceKind: isWheelLikeGamepad(gamepad) ? "wheel" : "controller",
         leftX: clampNumber(readAxis(gamepad, [0]), 0, -1, 1),
         leftY: clampNumber(readAxis(gamepad, [1]), 0, -1, 1),
         rightX: clampNumber(readAxis(gamepad, [2]), 0, -1, 1),
@@ -1819,8 +2048,34 @@ function updateControllerSnapshot(gamepad) {
   updateControllerTesterDom();
 }
 
+function updateWheelSnapshot(gamepad) {
+  state.wheelSnapshot = gamepad
+    ? {
+        steer: clampNumber(readAxis(gamepad, [0]), 0, -1, 1),
+        throttle: readWheelPedalValue(gamepad, 7, [2, 5, 1]),
+        brake: readWheelPedalValue(gamepad, 6, [1, 3, 2]),
+        clutch: readWheelPedalValue(gamepad, 8, [4, 5]),
+        axisCount: gamepad.axes ? gamepad.axes.length : 0,
+        buttonCount: gamepad.buttons ? gamepad.buttons.length : 0
+      }
+    : getEmptyWheelSnapshot();
+
+  updateWheelTesterDom();
+}
+
+function readWheelPedalValue(gamepad, buttonIndex, axisIndexes) {
+  const buttonValue = gamepad.buttons[buttonIndex] ? clampNumber(gamepad.buttons[buttonIndex].value, 0, 0, 1) : 0;
+  const axisValue = axisIndexes.reduce((best, index) => {
+    const axis = Number(gamepad.axes[index] || 0);
+    const value = Math.abs(axis) < 0.08 ? 0 : clampNumber((1 - axis) / 2, 0, 0, 1);
+    return Math.abs(value) > Math.abs(best) ? value : best;
+  }, 0);
+  return clampNumber(Math.max(buttonValue, axisValue), 0, 0, 1);
+}
+
 function getEmptyControllerSnapshot() {
   return {
+    deviceKind: "controller",
     leftX: 0,
     leftY: 0,
     rightX: 0,
@@ -1828,6 +2083,17 @@ function getEmptyControllerSnapshot() {
     leftTrigger: 0,
     rightTrigger: 0,
     buttons: new Set()
+  };
+}
+
+function getEmptyWheelSnapshot() {
+  return {
+    steer: 0,
+    throttle: 0,
+    brake: 0,
+    clutch: 0,
+    axisCount: 0,
+    buttonCount: 0
   };
 }
 
@@ -1850,6 +2116,54 @@ function updateControllerTesterDom() {
   tester.querySelectorAll("[data-controller-button]").forEach((button) => {
     button.classList.toggle("active", snapshot.buttons.has(Number(button.dataset.controllerButton)));
   });
+}
+
+function updateWheelTesterDom() {
+  if (state.activeView !== "settings") {
+    return;
+  }
+
+  const tester = elements.gameGrid.querySelector(".wheel-test:not(.empty)");
+  if (!tester) {
+    return;
+  }
+
+  const snapshot = state.wheelSnapshot || getEmptyWheelSnapshot();
+  updateWheelAxisDom(tester, "Steering", snapshot.steer);
+  updateWheelPedalDom(tester, "Throttle", snapshot.throttle);
+  updateWheelPedalDom(tester, "Brake", snapshot.brake);
+  updateWheelPedalDom(tester, "Clutch", snapshot.clutch);
+}
+
+function updateWheelAxisDom(tester, label, value) {
+  const axis = tester.querySelector(`[data-wheel-axis="${CSS.escape(label)}"]`);
+  if (!axis) {
+    return;
+  }
+  const dot = axis.querySelector("i");
+  const output = axis.querySelector("b");
+  if (dot) {
+    dot.style.left = `${50 + clampNumber(value, 0, -1, 1) * 50}%`;
+  }
+  if (output) {
+    output.textContent = `${Math.round(value * 100)}%`;
+  }
+}
+
+function updateWheelPedalDom(tester, label, value) {
+  const pedal = tester.querySelector(`[data-wheel-pedal="${CSS.escape(label)}"]`);
+  if (!pedal) {
+    return;
+  }
+  const percent = Math.round(clampNumber(value, 0, 0, 1) * 100);
+  const bar = pedal.querySelector("i");
+  const output = pedal.querySelector("b");
+  if (bar) {
+    bar.style.width = `${percent}%`;
+  }
+  if (output) {
+    output.textContent = `${percent}%`;
+  }
 }
 
 function updateStickDom(tester, label, x, y) {
@@ -1965,13 +2279,14 @@ function setJavaBridgeProfile(game, data) {
     return;
   }
 
-  const wasEnabled = Boolean(state.javaBridgeProfile && state.javaBridgeProfile.data && state.javaBridgeProfile.data.bridge && state.javaBridgeProfile.data.bridge.enabled);
+  const previousBridge = state.javaBridgeProfile && state.javaBridgeProfile.data && state.javaBridgeProfile.data.bridge;
+  const wasEnabled = Boolean(previousBridge && (previousBridge.enabled || previousBridge.wheelEnabled));
   state.javaBridgeProfile = {
     gameId: game.id,
     data
   };
 
-  if (wasEnabled && (!data.bridge || !data.bridge.enabled)) {
+  if (wasEnabled && (!data.bridge || (!data.bridge.enabled && !data.bridge.wheelEnabled))) {
     releaseJavaBridgeInputs();
   }
 
@@ -1987,7 +2302,7 @@ function isInputBridgePreferenceKey(key) {
 }
 
 function syncNativeJavaBridge(data) {
-  const enabled = Boolean(data && data.bridge && data.bridge.enabled);
+  const enabled = Boolean(data && data.bridge && (data.bridge.enabled || data.bridge.wheelEnabled));
   if (!enabled) {
     state.javaBridgeNativeActive = false;
     if (api.clearInputBridgeProfile) {
@@ -2831,11 +3146,20 @@ function previewJavaBridgePreference(key, value) {
     data.bridge.lookSensitivity = clampNumber(value, data.bridge.lookSensitivity, 0.2, 3);
   } else if (key.endsWith(".menuCursorSensitivity")) {
     data.bridge.menuCursorSensitivity = clampNumber(value, data.bridge.menuCursorSensitivity, 0.4, 3);
+  } else if (key.endsWith(".wheelDeadzone")) {
+    data.bridge.wheelDeadzone = clampNumber(value, data.bridge.wheelDeadzone, 0.02, 0.5);
+  } else if (key.endsWith(".wheelSensitivity")) {
+    data.bridge.wheelSensitivity = clampNumber(value, data.bridge.wheelSensitivity, 0.5, 2);
+  } else if (key.endsWith(".wheelPedalDeadzone")) {
+    data.bridge.wheelPedalDeadzone = clampNumber(value, data.bridge.wheelPedalDeadzone, 0.02, 0.5);
   } else {
     return;
   }
 
   data.sliders = (data.sliders || []).map((slider) => (
+    slider.key === key ? { ...slider, value: Number(value) } : slider
+  ));
+  data.wheelSliders = (data.wheelSliders || []).map((slider) => (
     slider.key === key ? { ...slider, value: Number(value) } : slider
   ));
   state.appPreferences.data = data;
@@ -2933,6 +3257,57 @@ function getRecentlyPlayedGames() {
   return getVisibleGames()
     .filter((game) => getGameProfile(game).lastPlayedAt)
     .sort((left, right) => getGameProfile(right).lastPlayedAt - getGameProfile(left).lastPlayedAt);
+}
+
+function getHomePrimaryGame() {
+  return getRecentlyPlayedGames()[0] || getFavoriteGames()[0] || getSuggestedGames()[0] || getVisibleGames()[0] || null;
+}
+
+function getSuggestedGames() {
+  return getVisibleGames()
+    .map((game) => ({ game, score: getSuggestionScore(game) }))
+    .sort((left, right) => right.score - left.score || left.game.title.localeCompare(right.game.title))
+    .map((item) => item.game);
+}
+
+function getSuggestionScore(game) {
+  const profile = getGameProfile(game);
+  let score = 0;
+
+  if (profile.favorite) {
+    score += 34;
+  }
+  if (profile.lastPlayedAt) {
+    const days = Math.max(0, Math.floor((Date.now() - Number(profile.lastPlayedAt)) / (24 * 60 * 60 * 1000)));
+    score += Math.max(8, 30 - days * 3);
+  }
+  if (profile.profileName || profile.accountLabel || profile.launchArgs) {
+    score += 8;
+  }
+  if (game.artworkUrl) {
+    score += 4;
+  }
+  if (["Steam", "Epic", "Xbox", "Minecraft", "Roblox"].includes(game.source)) {
+    score += 3;
+  }
+  if (game.launchType === "exe" || game.launchType === "appx") {
+    score += 2;
+  }
+
+  return score;
+}
+
+function getHomePrimaryReason(game, profile) {
+  if (profile.lastPlayedAt) {
+    return `Last played ${formatLastPlayed(profile.lastPlayedAt)} • ${game.source}`;
+  }
+  if (profile.favorite) {
+    return `Pinned favorite • ${game.source}`;
+  }
+  if (profile.profileName) {
+    return `${profile.profileName} profile • ${game.source}`;
+  }
+  return `${game.source} • ${game.launchType || "local"}`;
 }
 
 function getFilteredGameIndex(gameId) {
@@ -3335,6 +3710,18 @@ function createPreviewApi() {
     deadzone: 0.24,
     lookSensitivity: 1,
     menuCursorSensitivity: 1,
+    wheelEnabled: false,
+    wheelInvertPedals: false,
+    wheelDeadzone: 0.16,
+    wheelSensitivity: 1,
+    wheelPedalDeadzone: 0.12,
+    wheelControls: {
+      "universal_bridge.wheelSteerLeft": "key:A",
+      "universal_bridge.wheelSteerRight": "key:D",
+      "universal_bridge.wheelThrottle": "key:W",
+      "universal_bridge.wheelBrake": "key:S",
+      "universal_bridge.wheelClutch": "none"
+    },
     controls: {
       "universal_bridge.button0": "key:Space",
       "universal_bridge.button1": "key:Escape",
@@ -3493,6 +3880,10 @@ function createPreviewApi() {
     { value: "mouse:right", label: "Right click" },
     { value: "wheel:up", label: "Mouse wheel up" },
     { value: "wheel:down", label: "Mouse wheel down" },
+    { value: "key:W", label: "W" },
+    { value: "key:A", label: "A" },
+    { value: "key:S", label: "S" },
+    { value: "key:D", label: "D" },
     { value: "key:Space", label: "Space" },
     { value: "key:Shift", label: "Shift" },
     { value: "key:Control", label: "Control" },
@@ -3523,6 +3914,13 @@ function createPreviewApi() {
     { value: "key:7", label: "7" },
     { value: "key:8", label: "8" },
     { value: "key:9", label: "9" }
+  ];
+  const previewUniversalWheelControls = [
+    { key: "universal_bridge.wheelSteerLeft", label: "Steer left" },
+    { key: "universal_bridge.wheelSteerRight", label: "Steer right" },
+    { key: "universal_bridge.wheelThrottle", label: "Throttle" },
+    { key: "universal_bridge.wheelBrake", label: "Brake" },
+    { key: "universal_bridge.wheelClutch", label: "Clutch" }
   ];
 
   const getPreviewJavaPreferences = () => ({
@@ -3567,8 +3965,10 @@ function createPreviewApi() {
       titleTerms: game && game.title ? [String(game.title).toLowerCase()] : []
     },
     nativeBindingSupport: {
-      supported: false,
-      message: "Native in-game binding editing needs a per-game adapter because every game stores controller binds differently."
+      supported: /forza|racer|f1|assetto|beamng/i.test(`${game && game.title} ${game && game.installPath}`),
+      message: /forza|racer|f1|assetto|beamng/i.test(`${game && game.title} ${game && game.installPath}`)
+        ? "This looks like a wheel-native game. Leave the wheel fallback off unless the game does not detect your wheel, pedals, or shifter."
+        : "No native wheel binding adapter is available for this game yet. Turn on wheel fallback to map steering and pedals through Nova Deck."
     },
     controls: previewUniversalControls.map((control) => ({
       ...control,
@@ -3576,12 +3976,25 @@ function createPreviewApi() {
       options: previewUniversalOutputOptions
     })),
     toggles: [
-      { key: "universal_bridge.enabled", label: "Universal input bridge", enabled: previewUniversalBridge.enabled }
+      { key: "universal_bridge.enabled", label: "Universal input bridge", enabled: previewUniversalBridge.enabled },
+      { key: "universal_bridge.wheelEnabled", label: "Wheel fallback", enabled: previewUniversalBridge.wheelEnabled },
+      { key: "universal_bridge.wheelInvertPedals", label: "Invert pedals", enabled: previewUniversalBridge.wheelInvertPedals }
     ],
     sliders: [
       { key: "universal_bridge.deadzone", label: "Stick deadzone", min: 0.1, max: 0.7, step: 0.05, value: previewUniversalBridge.deadzone },
       { key: "universal_bridge.lookSensitivity", label: "Look sensitivity", min: 0.2, max: 3, step: 0.1, value: previewUniversalBridge.lookSensitivity },
       { key: "universal_bridge.menuCursorSensitivity", label: "Menu cursor speed", min: 0.4, max: 3, step: 0.1, value: previewUniversalBridge.menuCursorSensitivity }
+    ],
+    wheelTitle: "Wheel Fallback",
+    wheelControls: previewUniversalWheelControls.map((control) => ({
+      ...control,
+      value: previewUniversalBridge.wheelControls[control.key],
+      options: previewUniversalOutputOptions
+    })),
+    wheelSliders: [
+      { key: "universal_bridge.wheelDeadzone", label: "Steering deadzone", min: 0.02, max: 0.5, step: 0.02, value: previewUniversalBridge.wheelDeadzone },
+      { key: "universal_bridge.wheelSensitivity", label: "Steering sensitivity", min: 0.5, max: 2, step: 0.05, value: previewUniversalBridge.wheelSensitivity },
+      { key: "universal_bridge.wheelPedalDeadzone", label: "Pedal deadzone", min: 0.02, max: 0.5, step: 0.02, value: previewUniversalBridge.wheelPedalDeadzone }
     ]
   });
 
@@ -3716,6 +4129,21 @@ function createPreviewApi() {
           previewUniversalBridge.lookSensitivity = clampNumber(update.value, previewUniversalBridge.lookSensitivity, 0.2, 3);
         } else if (update && update.key === "universal_bridge.menuCursorSensitivity") {
           previewUniversalBridge.menuCursorSensitivity = clampNumber(update.value, previewUniversalBridge.menuCursorSensitivity, 0.4, 3);
+        } else if (update && update.key === "universal_bridge.wheelEnabled") {
+          previewUniversalBridge.wheelEnabled = update.value === "1" || update.value === true;
+        } else if (update && update.key === "universal_bridge.wheelInvertPedals") {
+          previewUniversalBridge.wheelInvertPedals = update.value === "1" || update.value === true;
+        } else if (update && update.key === "universal_bridge.wheelDeadzone") {
+          previewUniversalBridge.wheelDeadzone = clampNumber(update.value, previewUniversalBridge.wheelDeadzone, 0.02, 0.5);
+        } else if (update && update.key === "universal_bridge.wheelSensitivity") {
+          previewUniversalBridge.wheelSensitivity = clampNumber(update.value, previewUniversalBridge.wheelSensitivity, 0.5, 2);
+        } else if (update && update.key === "universal_bridge.wheelPedalDeadzone") {
+          previewUniversalBridge.wheelPedalDeadzone = clampNumber(update.value, previewUniversalBridge.wheelPedalDeadzone, 0.02, 0.5);
+        } else if (update && update.key && update.key.startsWith("universal_bridge.wheel")) {
+          const allowedValues = new Set(previewUniversalOutputOptions.map((option) => option.value));
+          if (allowedValues.has(update.value)) {
+            previewUniversalBridge.wheelControls[update.key] = update.value;
+          }
         } else if (update && update.key && update.key.startsWith("universal_bridge.button")) {
           const allowedValues = new Set(previewUniversalOutputOptions.map((option) => option.value));
           if (allowedValues.has(update.value)) {

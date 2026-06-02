@@ -1,6 +1,6 @@
 {
   "name": "nova-deck",
-  "version": "0.1.9",
+  "version": "0.1.10",
   "description": "A local-first Windows console shell for PC games.",
   "main": "src/main.js",
   "type": "commonjs",

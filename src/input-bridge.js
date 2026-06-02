@@ -86,7 +86,7 @@ function setInputBridgeProfile(profile) {
   }
 
   ensureBridgeScript();
-  if (activeBridgeProfile && bridgeControlsChanged(activeBridgeProfile.controls, normalizedProfile.controls)) {
+  if (activeBridgeProfile && bridgeProfileChanged(activeBridgeProfile, normalizedProfile)) {
     sendVirtualInput(getReleaseEvents(activeBridgeProfile));
   }
 
@@ -204,7 +204,8 @@ function normalizeEvents(events) {
 }
 
 function normalizeBridgeProfile(profile) {
-  if (!profile || typeof profile !== "object" || !profile.bridge || !profile.bridge.enabled) {
+  const bridge = profile && typeof profile === "object" ? profile.bridge : null;
+  if (!profile || typeof profile !== "object" || !bridge || (!bridge.enabled && !bridge.wheelEnabled)) {
     return null;
   }
 
@@ -222,16 +223,32 @@ function normalizeBridgeProfile(profile) {
 
   const targetProcessNames = normalizeTargetTerms(profile.bridgeTargets && profile.bridgeTargets.processNames);
   const targetTitleTerms = normalizeTargetTerms(profile.bridgeTargets && profile.bridgeTargets.titleTerms);
+  const wheelControls = bridge.wheelControls && typeof bridge.wheelControls === "object" ? bridge.wheelControls : {};
 
   return {
     enabled: true,
-    deadzone: clampNumber(profile.bridge.deadzone, 0.24, 0.1, 0.7),
-    lookSensitivity: clampNumber(profile.bridge.lookSensitivity, 1, 0.2, 3),
-    menuCursorSensitivity: clampNumber(profile.bridge.menuCursorSensitivity, 1, 0.4, 3),
+    deadzone: clampNumber(bridge.deadzone, 0.24, 0.1, 0.7),
+    lookSensitivity: clampNumber(bridge.lookSensitivity, 1, 0.2, 3),
+    menuCursorSensitivity: clampNumber(bridge.menuCursorSensitivity, 1, 0.4, 3),
+    wheelEnabled: bridge.wheelEnabled === true,
+    wheelInvertPedals: bridge.wheelInvertPedals === true,
+    wheelDeadzone: clampNumber(bridge.wheelDeadzone, 0.16, 0.02, 0.5),
+    wheelSensitivity: clampNumber(bridge.wheelSensitivity, 1, 0.5, 2),
+    wheelPedalDeadzone: clampNumber(bridge.wheelPedalDeadzone, 0.12, 0.02, 0.5),
+    wheelSteerLeft: normalizeOutput(wheelControls["universal_bridge.wheelSteerLeft"], "key:A"),
+    wheelSteerRight: normalizeOutput(wheelControls["universal_bridge.wheelSteerRight"], "key:D"),
+    wheelThrottle: normalizeOutput(wheelControls["universal_bridge.wheelThrottle"], "key:W"),
+    wheelBrake: normalizeOutput(wheelControls["universal_bridge.wheelBrake"], "key:S"),
+    wheelClutch: normalizeOutput(wheelControls["universal_bridge.wheelClutch"], "none"),
     targetProcessNames,
     targetTitleTerms,
     controls
   };
+}
+
+function normalizeOutput(value, fallback) {
+  const output = String(value || fallback || "none");
+  return isAllowedOutput(output) ? output : fallback;
 }
 
 function isAllowedOutput(value) {
@@ -251,9 +268,9 @@ function normalizeTargetTerms(values) {
     .slice(0, 16);
 }
 
-function bridgeControlsChanged(leftControls, rightControls) {
-  const left = JSON.stringify(Array.isArray(leftControls) ? leftControls : []);
-  const right = JSON.stringify(Array.isArray(rightControls) ? rightControls : []);
+function bridgeProfileChanged(leftProfile, rightProfile) {
+  const left = JSON.stringify(leftProfile || {});
+  const right = JSON.stringify(rightProfile || {});
   return left !== right;
 }
 
@@ -281,11 +298,7 @@ function getReleaseEvents(profile) {
   const events = new Map();
   const addKey = (vk) => events.set(`key:${vk}`, { type: "key", vk, down: false });
   const addMouse = (button) => events.set(`mouse:${button}`, { type: "mouseButton", button, down: false });
-
-  [0x57, 0x41, 0x53, 0x44].forEach(addKey);
-
-  for (const control of profile.controls || []) {
-    const output = control.value;
+  const addOutput = (output) => {
     const vk = getVirtualKey(output);
     if (vk) {
       addKey(vk);
@@ -294,6 +307,22 @@ function getReleaseEvents(profile) {
     } else if (output === "mouse:right") {
       addMouse("right");
     }
+  };
+
+  [0x57, 0x41, 0x53, 0x44].forEach(addKey);
+
+  for (const control of profile.controls || []) {
+    addOutput(control.value);
+  }
+
+  if (profile.wheelEnabled) {
+    [
+      profile.wheelSteerLeft,
+      profile.wheelSteerRight,
+      profile.wheelThrottle,
+      profile.wheelBrake,
+      profile.wheelClutch
+    ].forEach(addOutput);
   }
 
   return Array.from(events.values());
@@ -505,6 +534,16 @@ public static class NovaNativeInputBridge {
     public double Deadzone = 0.24;
     public double LookSensitivity = 1.0;
     public double MenuCursorSensitivity = 1.0;
+    public bool WheelEnabled = false;
+    public bool WheelInvertPedals = false;
+    public double WheelDeadzone = 0.16;
+    public double WheelSensitivity = 1.0;
+    public double WheelPedalDeadzone = 0.12;
+    public string WheelSteerLeft = "key:A";
+    public string WheelSteerRight = "key:D";
+    public string WheelThrottle = "key:W";
+    public string WheelBrake = "key:S";
+    public string WheelClutch = "none";
     public string[] TargetNames = DefaultTargetNames;
     public string[] TargetTitleTerms = DefaultTargetTitleTerms;
     public DateTime LastWriteUtc = DateTime.MinValue;
@@ -517,6 +556,13 @@ public static class NovaNativeInputBridge {
     public double LeftY = 0.0;
     public double RightX = 0.0;
     public double RightY = 0.0;
+    public double RawY = 0.0;
+    public double RawZ = 0.0;
+    public double RawR = 0.0;
+    public double RawV = 0.0;
+    public double Throttle = 0.0;
+    public double Brake = 0.0;
+    public double Clutch = 0.0;
     public bool[] Buttons = new bool[32];
   }
 
@@ -608,6 +654,12 @@ public static class NovaNativeInputBridge {
     double mouseCarryY = 0.0;
     double menuCarryX = 0.0;
     double menuCarryY = 0.0;
+    DateTime appliedProfileWriteUtc = DateTime.MinValue;
+    bool wheelRestReady = false;
+    double wheelRestY = 0.0;
+    double wheelRestZ = 0.0;
+    double wheelRestR = 0.0;
+    double wheelRestV = 0.0;
 
     timeBeginPeriod(1);
     try {
@@ -622,6 +674,10 @@ public static class NovaNativeInputBridge {
         long nowMs = watch.ElapsedMilliseconds;
         if (nowMs >= nextProfileReadMs) {
           profile = LoadProfile(profilePath, profile);
+          if (profile.LastWriteUtc != appliedProfileWriteUtc) {
+            appliedProfileWriteUtc = profile.LastWriteUtc;
+            wheelRestReady = false;
+          }
           nextProfileReadMs = nowMs + 80;
         }
         if (nowMs >= nextTargetCheckMs) {
@@ -640,6 +696,7 @@ public static class NovaNativeInputBridge {
           mouseCarryY = 0.0;
           menuCarryX = 0.0;
           menuCarryY = 0.0;
+          wheelRestReady = false;
           Thread.Sleep(4);
           continue;
         }
@@ -654,6 +711,7 @@ public static class NovaNativeInputBridge {
           mouseCarryY = 0.0;
           menuCarryX = 0.0;
           menuCarryY = 0.0;
+          wheelRestReady = false;
           lastMenuMode = menuMode;
         }
 
@@ -692,10 +750,51 @@ public static class NovaNativeInputBridge {
           SetHeldOutput(heldOutputs, "menu:left", IsPressed(controller, 14), "key:Left");
           SetHeldOutput(heldOutputs, "menu:right", IsPressed(controller, 15), "key:Right");
         } else {
-          SetHeldOutput(heldOutputs, "move:forward", leftY < -moveThreshold, "key:W");
-          SetHeldOutput(heldOutputs, "move:back", leftY > moveThreshold, "key:S");
-          SetHeldOutput(heldOutputs, "move:left", leftX < -moveThreshold, "key:A");
-          SetHeldOutput(heldOutputs, "move:right", leftX > moveThreshold, "key:D");
+          if (profile.WheelEnabled) {
+            if (!wheelRestReady || controller.Source != "Joystick") {
+              wheelRestY = controller.RawY;
+              wheelRestZ = controller.RawZ;
+              wheelRestR = controller.RawR;
+              wheelRestV = controller.RawV;
+              wheelRestReady = true;
+            }
+
+            SetHeldOutput(heldOutputs, "move:forward", false, "key:W");
+            SetHeldOutput(heldOutputs, "move:back", false, "key:S");
+            SetHeldOutput(heldOutputs, "move:left", false, "key:A");
+            SetHeldOutput(heldOutputs, "move:right", false, "key:D");
+
+            double steer = ApplyLookCurve(ApplyScaledDeadzone(leftX * profile.WheelSensitivity, profile.WheelDeadzone));
+            double steerThreshold = Math.Min(0.75, profile.WheelDeadzone + 0.06);
+            double throttle = controller.Throttle;
+            double brake = controller.Brake;
+            double clutch = controller.Clutch;
+            if (controller.Source == "Joystick") {
+              double combinedPositive = PedalTravel(controller.RawY, wheelRestY, true);
+              double combinedNegative = PedalTravel(controller.RawY, wheelRestY, false);
+              throttle = Math.Max(throttle, profile.WheelInvertPedals ? combinedPositive : combinedNegative);
+              brake = Math.Max(brake, profile.WheelInvertPedals ? combinedNegative : combinedPositive);
+              throttle = Math.Max(throttle, PedalTravel(controller.RawZ, wheelRestZ, profile.WheelInvertPedals));
+              brake = Math.Max(brake, PedalTravel(controller.RawR, wheelRestR, profile.WheelInvertPedals));
+              clutch = Math.Max(clutch, PedalTravel(controller.RawV, wheelRestV, profile.WheelInvertPedals));
+            }
+
+            SetHeldOutput(heldOutputs, "wheel:steer-left", steer < -steerThreshold, profile.WheelSteerLeft);
+            SetHeldOutput(heldOutputs, "wheel:steer-right", steer > steerThreshold, profile.WheelSteerRight);
+            SetHeldOutput(heldOutputs, "wheel:throttle", throttle > profile.WheelPedalDeadzone, profile.WheelThrottle);
+            SetHeldOutput(heldOutputs, "wheel:brake", brake > profile.WheelPedalDeadzone, profile.WheelBrake);
+            SetHeldOutput(heldOutputs, "wheel:clutch", clutch > profile.WheelPedalDeadzone, profile.WheelClutch);
+          } else {
+            SetHeldOutput(heldOutputs, "wheel:steer-left", false, profile.WheelSteerLeft);
+            SetHeldOutput(heldOutputs, "wheel:steer-right", false, profile.WheelSteerRight);
+            SetHeldOutput(heldOutputs, "wheel:throttle", false, profile.WheelThrottle);
+            SetHeldOutput(heldOutputs, "wheel:brake", false, profile.WheelBrake);
+            SetHeldOutput(heldOutputs, "wheel:clutch", false, profile.WheelClutch);
+            SetHeldOutput(heldOutputs, "move:forward", leftY < -moveThreshold, "key:W");
+            SetHeldOutput(heldOutputs, "move:back", leftY > moveThreshold, "key:S");
+            SetHeldOutput(heldOutputs, "move:left", leftX < -moveThreshold, "key:A");
+            SetHeldOutput(heldOutputs, "move:right", leftX > moveThreshold, "key:D");
+          }
 
           double targetLookX = ApplyLookCurve(ApplyScaledDeadzone(rightX, profile.Deadzone));
           double targetLookY = ApplyLookCurve(ApplyScaledDeadzone(rightY, profile.Deadzone));
@@ -767,6 +866,8 @@ public static class NovaNativeInputBridge {
     controller.LeftY = -NormalizeStick(gamepad.sThumbLY);
     controller.RightX = NormalizeStick(gamepad.sThumbRX);
     controller.RightY = -NormalizeStick(gamepad.sThumbRY);
+    controller.Throttle = Clamp(gamepad.bRightTrigger / 255.0, 0.0, 1.0);
+    controller.Brake = Clamp(gamepad.bLeftTrigger / 255.0, 0.0, 1.0);
     int buttons = gamepad.wButtons;
     controller.Buttons[0] = (buttons & 0x1000) != 0;
     controller.Buttons[1] = (buttons & 0x2000) != 0;
@@ -791,12 +892,16 @@ public static class NovaNativeInputBridge {
     ControllerState controller = new ControllerState();
     controller.Source = "Joystick";
     controller.LeftX = NormalizeJoyAxis(joyInfo.dwXpos);
-    controller.LeftY = NormalizeJoyAxis(joyInfo.dwYpos);
-    controller.RightX = NormalizeJoyAxis(joyInfo.dwRpos);
+    controller.RawY = NormalizeJoyAxis(joyInfo.dwYpos);
+    controller.RawZ = NormalizeJoyAxis(joyInfo.dwZpos);
+    controller.RawR = NormalizeJoyAxis(joyInfo.dwRpos);
+    controller.RawV = NormalizeJoyAxis(joyInfo.dwVpos);
+    controller.LeftY = controller.RawY;
+    controller.RightX = controller.RawR;
     controller.RightY = NormalizeJoyAxis(joyInfo.dwUpos);
     if (Math.Abs(controller.RightX) < 0.04 && Math.Abs(controller.RightY) < 0.04) {
-      controller.RightX = NormalizeJoyAxis(joyInfo.dwZpos);
-      controller.RightY = NormalizeJoyAxis(joyInfo.dwRpos);
+      controller.RightX = controller.RawZ;
+      controller.RightY = controller.RawR;
     }
 
     for (int index = 0; index < 32; index++) {
@@ -840,6 +945,16 @@ public static class NovaNativeInputBridge {
       next.Deadzone = Clamp(ReadDouble(json, "deadzone", current.Deadzone), 0.1, 0.7);
       next.LookSensitivity = Clamp(ReadDouble(json, "lookSensitivity", current.LookSensitivity), 0.2, 3.0);
       next.MenuCursorSensitivity = Clamp(ReadDouble(json, "menuCursorSensitivity", current.MenuCursorSensitivity), 0.4, 3.0);
+      next.WheelEnabled = ReadBool(json, "wheelEnabled", current.WheelEnabled);
+      next.WheelInvertPedals = ReadBool(json, "wheelInvertPedals", current.WheelInvertPedals);
+      next.WheelDeadzone = Clamp(ReadDouble(json, "wheelDeadzone", current.WheelDeadzone), 0.02, 0.5);
+      next.WheelSensitivity = Clamp(ReadDouble(json, "wheelSensitivity", current.WheelSensitivity), 0.5, 2.0);
+      next.WheelPedalDeadzone = Clamp(ReadDouble(json, "wheelPedalDeadzone", current.WheelPedalDeadzone), 0.02, 0.5);
+      next.WheelSteerLeft = ReadOutput(json, "wheelSteerLeft", current.WheelSteerLeft);
+      next.WheelSteerRight = ReadOutput(json, "wheelSteerRight", current.WheelSteerRight);
+      next.WheelThrottle = ReadOutput(json, "wheelThrottle", current.WheelThrottle);
+      next.WheelBrake = ReadOutput(json, "wheelBrake", current.WheelBrake);
+      next.WheelClutch = ReadOutput(json, "wheelClutch", current.WheelClutch);
       next.TargetNames = ReadStringArray(json, "targetProcessNames", current.TargetNames);
       next.TargetTitleTerms = ReadStringArray(json, "targetTitleTerms", current.TargetTitleTerms);
 
@@ -864,6 +979,17 @@ public static class NovaNativeInputBridge {
     Match match = Regex.Match(json, "\"" + key + "\"\\s*:\\s*([-0-9.]+)");
     double value;
     return match.Success && Double.TryParse(match.Groups[1].Value, out value) ? value : fallback;
+  }
+
+  private static bool ReadBool(string json, string key, bool fallback) {
+    Match match = Regex.Match(json, "\"" + key + "\"\\s*:\\s*(true|false)", RegexOptions.IgnoreCase);
+    return match.Success ? match.Groups[1].Value.Equals("true", StringComparison.OrdinalIgnoreCase) : fallback;
+  }
+
+  private static string ReadOutput(string json, string key, string fallback) {
+    Match match = Regex.Match(json, "\"" + key + "\"\\s*:\\s*\"([^\"]*)\"");
+    string value = match.Success ? match.Groups[1].Value : fallback;
+    return IsAllowedOutput(value) ? value : fallback;
   }
 
   private static string[] ReadStringArray(string json, string key, string[] fallback) {
@@ -1016,6 +1142,11 @@ public static class NovaNativeInputBridge {
 
   private static double NormalizeJoyAxis(UInt32 value) {
     return Clamp(((double)value - 32767.5) / 32767.5, -1.0, 1.0);
+  }
+
+  private static double PedalTravel(double value, double rest, bool invert) {
+    double delta = invert ? value - rest : rest - value;
+    return Clamp(delta / 1.6, 0.0, 1.0);
   }
 
   private static double ApplyScaledDeadzone(double value, double zone) {

@@ -111,6 +111,12 @@ const UNIVERSAL_BRIDGE_DEFAULTS = {
   deadzone: 0.24,
   lookSensitivity: 1,
   menuCursorSensitivity: 1,
+  wheelEnabled: false,
+  wheelInvertPedals: false,
+  wheelDeadzone: 0.16,
+  wheelSensitivity: 1,
+  wheelPedalDeadzone: 0.12,
+  wheelControls: {},
   controls: {}
 };
 
@@ -139,6 +145,10 @@ const UNIVERSAL_BRIDGE_OUTPUT_OPTIONS = [
   { value: "mouse:right", label: "Right click" },
   { value: "wheel:up", label: "Mouse wheel up" },
   { value: "wheel:down", label: "Mouse wheel down" },
+  { value: "key:W", label: "W" },
+  { value: "key:A", label: "A" },
+  { value: "key:S", label: "S" },
+  { value: "key:D", label: "D" },
   { value: "key:Space", label: "Space" },
   { value: "key:Shift", label: "Shift" },
   { value: "key:Control", label: "Control" },
@@ -169,6 +179,41 @@ const UNIVERSAL_BRIDGE_OUTPUT_OPTIONS = [
   { value: "key:7", label: "7" },
   { value: "key:8", label: "8" },
   { value: "key:9", label: "9" }
+];
+
+const UNIVERSAL_WHEEL_CONTROLS = [
+  { key: "universal_bridge.wheelSteerLeft", label: "Steer left", defaultValue: "key:A" },
+  { key: "universal_bridge.wheelSteerRight", label: "Steer right", defaultValue: "key:D" },
+  { key: "universal_bridge.wheelThrottle", label: "Throttle", defaultValue: "key:W" },
+  { key: "universal_bridge.wheelBrake", label: "Brake", defaultValue: "key:S" },
+  { key: "universal_bridge.wheelClutch", label: "Clutch", defaultValue: "none" }
+];
+
+const WHEEL_NATIVE_GAME_TERMS = [
+  "forza",
+  "assetto",
+  "automobilista",
+  "iracing",
+  "beamng",
+  "dirt rally",
+  "dirt 4",
+  "f1 ",
+  "formula",
+  "project cars",
+  "race room",
+  "raceroom",
+  "rfactor",
+  "wrc",
+  "the crew",
+  "need for speed",
+  "american truck",
+  "euro truck",
+  "truck simulator",
+  "snowrunner",
+  "wreckfest",
+  "grid",
+  "motogp",
+  "ride "
 ];
 
 const JAVA_BRIDGE_TARGETS = {
@@ -204,6 +249,7 @@ const JAVA_CONTROL_KEYS = new Set(JAVA_BRIDGE_CONTROLS.map((item) => item.key));
 const JAVA_OUTPUT_VALUES = new Set(JAVA_BRIDGE_OUTPUT_OPTIONS.map((item) => item.value));
 const UNIVERSAL_CONTROL_KEYS = new Set(UNIVERSAL_BRIDGE_CONTROLS.map((item) => item.key));
 const UNIVERSAL_OUTPUT_VALUES = new Set(UNIVERSAL_BRIDGE_OUTPUT_OPTIONS.map((item) => item.value));
+const UNIVERSAL_WHEEL_CONTROL_KEYS = new Set(UNIVERSAL_WHEEL_CONTROLS.map((item) => item.key));
 
 function getGamePreferences(game, storedSettings = {}) {
   if (isMinecraftBedrockGame(game)) {
@@ -356,22 +402,26 @@ function getJavaBridgePreferences(storedSettings = {}) {
 function getUniversalBridgePreferences(game, storedSettings = {}) {
   const bridge = normalizeUniversalBridgeSettings(storedSettings.universalBridge);
   const bridgeTargets = getUniversalBridgeTargets(game);
+  const likelyNativeWheel = isLikelyNativeWheelGame(game);
 
   return {
     supported: true,
     kind: "universal-controller-bridge",
     title: game && game.title ? game.title : "Local Game",
     status: "ready",
-    message: "For games without solid controller support, Nova Deck can convert the focused game window into keyboard and mouse input.",
+    message: "Use native controller or wheel support first. If this game does not see the device, Nova Deck can bridge it into keyboard and mouse input.",
     profileName: bridgeTargets.processNames.length ? bridgeTargets.processNames.join(", ") : "Window title targeting",
     controlTitle: "Button Mapping",
     toggleTitle: "Universal Bridge",
     sliderTitle: "Sticks",
+    wheelTitle: "Wheel Fallback",
     bridge,
     bridgeTargets,
     nativeBindingSupport: {
-      supported: false,
-      message: "Native in-game binding editing needs a per-game adapter because every game stores controller binds differently. Nova Deck can add those here as we support specific games."
+      supported: likelyNativeWheel,
+      message: likelyNativeWheel
+        ? "This looks like a wheel-native game. Leave the wheel fallback off unless the game does not detect your wheel, pedals, or shifter."
+        : "No native wheel binding adapter is available for this game yet. Turn on wheel fallback to map steering and pedals through Nova Deck."
     },
     controls: UNIVERSAL_BRIDGE_CONTROLS.map((control) => ({
       ...control,
@@ -383,6 +433,16 @@ function getUniversalBridgePreferences(game, storedSettings = {}) {
         key: "universal_bridge.enabled",
         label: "Universal input bridge",
         enabled: bridge.enabled
+      },
+      {
+        key: "universal_bridge.wheelEnabled",
+        label: "Wheel fallback",
+        enabled: bridge.wheelEnabled
+      },
+      {
+        key: "universal_bridge.wheelInvertPedals",
+        label: "Invert pedals",
+        enabled: bridge.wheelInvertPedals
       }
     ],
     sliders: [
@@ -409,6 +469,37 @@ function getUniversalBridgePreferences(game, storedSettings = {}) {
         max: 3,
         step: 0.1,
         value: bridge.menuCursorSensitivity
+      }
+    ],
+    wheelControls: UNIVERSAL_WHEEL_CONTROLS.map((control) => ({
+      ...control,
+      value: bridge.wheelControls[control.key],
+      options: UNIVERSAL_BRIDGE_OUTPUT_OPTIONS
+    })),
+    wheelSliders: [
+      {
+        key: "universal_bridge.wheelDeadzone",
+        label: "Steering deadzone",
+        min: 0.02,
+        max: 0.5,
+        step: 0.02,
+        value: bridge.wheelDeadzone
+      },
+      {
+        key: "universal_bridge.wheelSensitivity",
+        label: "Steering sensitivity",
+        min: 0.5,
+        max: 2,
+        step: 0.05,
+        value: bridge.wheelSensitivity
+      },
+      {
+        key: "universal_bridge.wheelPedalDeadzone",
+        label: "Pedal deadzone",
+        min: 0.02,
+        max: 0.5,
+        step: 0.02,
+        value: bridge.wheelPedalDeadzone
       }
     ]
   };
@@ -512,6 +603,55 @@ function updateUniversalBridgeSettings(existingSettings, update) {
     };
   }
 
+  if (key === "universal_bridge.wheelEnabled") {
+    return {
+      ...current,
+      wheelEnabled: update.value === "1" || update.value === true
+    };
+  }
+
+  if (key === "universal_bridge.wheelInvertPedals") {
+    return {
+      ...current,
+      wheelInvertPedals: update.value === "1" || update.value === true
+    };
+  }
+
+  if (key === "universal_bridge.wheelDeadzone") {
+    return {
+      ...current,
+      wheelDeadzone: clampNumber(update.value, current.wheelDeadzone, 0.02, 0.5)
+    };
+  }
+
+  if (key === "universal_bridge.wheelSensitivity") {
+    return {
+      ...current,
+      wheelSensitivity: clampNumber(update.value, current.wheelSensitivity, 0.5, 2)
+    };
+  }
+
+  if (key === "universal_bridge.wheelPedalDeadzone") {
+    return {
+      ...current,
+      wheelPedalDeadzone: clampNumber(update.value, current.wheelPedalDeadzone, 0.02, 0.5)
+    };
+  }
+
+  if (UNIVERSAL_WHEEL_CONTROL_KEYS.has(key)) {
+    const value = String(update.value || "none");
+    if (!UNIVERSAL_OUTPUT_VALUES.has(value)) {
+      return current;
+    }
+    return {
+      ...current,
+      wheelControls: {
+        ...current.wheelControls,
+        [key]: value
+      }
+    };
+  }
+
   if (UNIVERSAL_CONTROL_KEYS.has(key)) {
     const value = String(update.value || "none");
     if (!UNIVERSAL_OUTPUT_VALUES.has(value)) {
@@ -551,11 +691,18 @@ function normalizeJavaBridgeSettings(settings = {}) {
 function normalizeUniversalBridgeSettings(settings = {}) {
   const input = settings && typeof settings === "object" && !Array.isArray(settings) ? settings : {};
   const inputControls = input.controls && typeof input.controls === "object" ? input.controls : {};
+  const inputWheelControls = input.wheelControls && typeof input.wheelControls === "object" ? input.wheelControls : {};
   const controls = {};
+  const wheelControls = {};
 
   for (const control of UNIVERSAL_BRIDGE_CONTROLS) {
     const value = String(inputControls[control.key] || control.defaultValue);
     controls[control.key] = UNIVERSAL_OUTPUT_VALUES.has(value) ? value : control.defaultValue;
+  }
+
+  for (const control of UNIVERSAL_WHEEL_CONTROLS) {
+    const value = String(inputWheelControls[control.key] || control.defaultValue);
+    wheelControls[control.key] = UNIVERSAL_OUTPUT_VALUES.has(value) ? value : control.defaultValue;
   }
 
   return {
@@ -563,6 +710,12 @@ function normalizeUniversalBridgeSettings(settings = {}) {
     deadzone: clampNumber(input.deadzone, UNIVERSAL_BRIDGE_DEFAULTS.deadzone, 0.1, 0.7),
     lookSensitivity: clampNumber(input.lookSensitivity, UNIVERSAL_BRIDGE_DEFAULTS.lookSensitivity, 0.2, 3),
     menuCursorSensitivity: clampNumber(input.menuCursorSensitivity, UNIVERSAL_BRIDGE_DEFAULTS.menuCursorSensitivity, 0.4, 3),
+    wheelEnabled: input.wheelEnabled === true,
+    wheelInvertPedals: input.wheelInvertPedals === true,
+    wheelDeadzone: clampNumber(input.wheelDeadzone, UNIVERSAL_BRIDGE_DEFAULTS.wheelDeadzone, 0.02, 0.5),
+    wheelSensitivity: clampNumber(input.wheelSensitivity, UNIVERSAL_BRIDGE_DEFAULTS.wheelSensitivity, 0.5, 2),
+    wheelPedalDeadzone: clampNumber(input.wheelPedalDeadzone, UNIVERSAL_BRIDGE_DEFAULTS.wheelPedalDeadzone, 0.02, 0.5),
+    wheelControls,
     controls
   };
 }
@@ -586,6 +739,11 @@ function isMinecraftJavaGame(game) {
 
 function getGameText(game) {
   return `${game && game.title} ${game && game.source} ${game && game.launchType} ${game && game.launchTarget} ${game && game.installPath}`.toLowerCase();
+}
+
+function isLikelyNativeWheelGame(game) {
+  const text = getGameText(game);
+  return WHEEL_NATIVE_GAME_TERMS.some((term) => text.includes(term));
 }
 
 function getUniversalBridgeTargets(game) {
