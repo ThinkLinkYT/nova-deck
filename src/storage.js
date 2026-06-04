@@ -9,6 +9,7 @@ const DEFAULT_APP_SETTINGS = {
   rescanOnStart: true,
   reduceMotion: false,
   showHiddenLaunchers: false,
+  overlayEnabled: true,
   theme: "nova"
 };
 
@@ -194,6 +195,7 @@ function normalizeAppSettings(settings = {}) {
     rescanOnStart: normalizeBoolean(settings.rescanOnStart, DEFAULT_APP_SETTINGS.rescanOnStart),
     reduceMotion: normalizeBoolean(settings.reduceMotion, DEFAULT_APP_SETTINGS.reduceMotion),
     showHiddenLaunchers: normalizeBoolean(settings.showHiddenLaunchers, DEFAULT_APP_SETTINGS.showHiddenLaunchers),
+    overlayEnabled: normalizeBoolean(settings.overlayEnabled, DEFAULT_APP_SETTINGS.overlayEnabled),
     theme
   };
 }

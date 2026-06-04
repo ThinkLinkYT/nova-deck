@@ -1,0 +1,344 @@
+:root {
+  color-scheme: dark;
+  --panel: rgba(10, 12, 16, 0.94);
+  --panel-strong: rgba(20, 24, 31, 0.96);
+  --line: rgba(255, 255, 255, 0.12);
+  --soft-line: rgba(255, 255, 255, 0.08);
+  --text: #f7f9fb;
+  --muted: #aeb8c5;
+  --quiet: #707b88;
+  --cyan: #67d5ff;
+  --amber: #f0c24f;
+  --rose: #ff6f9c;
+  --green: #6ee7a8;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  overflow: hidden;
+  color: var(--text);
+  font-family: "Segoe UI", system-ui, sans-serif;
+  background: transparent;
+}
+
+button,
+input,
+select {
+  font: inherit;
+}
+
+button {
+  cursor: pointer;
+}
+
+.overlay-root {
+  display: grid;
+  width: 100%;
+  height: 100%;
+  padding: 12px;
+  -webkit-app-region: drag;
+}
+
+.overlay-panel {
+  display: grid;
+  grid-template-rows: auto auto auto auto 1fr auto auto;
+  gap: 12px;
+  min-height: 0;
+  padding: 16px;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background:
+    linear-gradient(135deg, rgba(103, 213, 255, 0.14), transparent 34%),
+    linear-gradient(215deg, rgba(240, 194, 79, 0.14), transparent 40%),
+    var(--panel);
+  box-shadow: 0 30px 90px rgba(0, 0, 0, 0.55);
+  backdrop-filter: blur(18px);
+  -webkit-app-region: drag;
+}
+
+.overlay-head,
+.game-strip,
+.usage-grid,
+.status-grid,
+.action-grid,
+.power-row,
+.overlay-foot {
+  -webkit-app-region: no-drag;
+}
+
+.overlay-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.overlay-head div {
+  min-width: 0;
+}
+
+.overlay-head span,
+.game-copy p,
+.status-tile span,
+.usage-tile span,
+.overlay-foot span,
+.overlay-foot b {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0;
+  text-transform: uppercase;
+}
+
+.overlay-head strong {
+  display: block;
+  margin-top: 3px;
+  overflow: hidden;
+  font-size: 22px;
+  line-height: 1.12;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.icon-button {
+  display: grid;
+  place-items: center;
+  width: 38px;
+  height: 38px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  color: var(--text);
+  font-weight: 900;
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.game-strip {
+  display: grid;
+  grid-template-columns: 84px minmax(0, 1fr);
+  gap: 12px;
+  align-items: center;
+  min-width: 0;
+  padding: 12px;
+  border: 1px solid var(--soft-line);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.045);
+}
+
+.game-art {
+  display: grid;
+  place-items: center;
+  width: 84px;
+  height: 84px;
+  overflow: hidden;
+  border: 1px solid var(--soft-line);
+  border-radius: 8px;
+  background:
+    linear-gradient(145deg, rgba(103, 213, 255, 0.18), transparent),
+    rgba(0, 0, 0, 0.28);
+}
+
+.game-art img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  padding: 10px;
+}
+
+.game-art b {
+  color: var(--cyan);
+  font-size: 22px;
+}
+
+.game-copy {
+  min-width: 0;
+}
+
+.game-copy strong {
+  display: block;
+  overflow: hidden;
+  font-size: 20px;
+  line-height: 1.2;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.game-copy span {
+  display: block;
+  margin-top: 6px;
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 13px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.usage-grid,
+.status-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.usage-tile,
+.status-tile {
+  min-width: 0;
+  padding: 10px;
+  border: 1px solid var(--soft-line);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.045);
+}
+
+.usage-tile {
+  display: grid;
+  gap: 7px;
+}
+
+.usage-tile strong,
+.status-tile strong {
+  overflow: hidden;
+  font-size: 15px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.usage-tile i {
+  display: block;
+  height: 4px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.09);
+}
+
+.usage-tile i::before {
+  display: block;
+  width: var(--value, 0%);
+  height: 100%;
+  content: "";
+  border-radius: inherit;
+  background: linear-gradient(90deg, var(--green), var(--cyan), var(--amber));
+}
+
+.usage-tile.static i::before {
+  width: 100%;
+  background: linear-gradient(90deg, rgba(103, 213, 255, 0.55), rgba(255, 111, 156, 0.45));
+}
+
+.status-tile {
+  display: grid;
+  gap: 6px;
+}
+
+.action-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 9px;
+  align-content: start;
+}
+
+.power-row {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 9px;
+}
+
+.overlay-action {
+  min-height: 46px;
+  padding: 0 12px;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 850;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  background: rgba(255, 255, 255, 0.055);
+}
+
+.overlay-action.primary {
+  border-color: rgba(240, 194, 79, 0.72);
+  color: #15120a;
+  background: var(--amber);
+}
+
+.overlay-action.compact {
+  min-height: 40px;
+  font-size: 12px;
+}
+
+.overlay-action:hover,
+.overlay-action.focused,
+.icon-button:hover,
+.icon-button.focused {
+  border-color: rgba(103, 213, 255, 0.76);
+  background: rgba(103, 213, 255, 0.14);
+  outline: none;
+}
+
+.overlay-action.primary:hover,
+.overlay-action.primary.focused {
+  background: #ffd46d;
+}
+
+.overlay-action:disabled {
+  cursor: default;
+  opacity: 0.45;
+}
+
+.overlay-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-width: 0;
+  padding-top: 4px;
+}
+
+.overlay-foot span,
+.overlay-foot b {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  text-transform: none;
+}
+
+.overlay-foot b {
+  color: var(--quiet);
+}
+
+@media (max-height: 660px) {
+  .overlay-root {
+    padding: 8px;
+  }
+
+  .overlay-panel {
+    gap: 9px;
+    padding: 12px;
+  }
+
+  .game-strip {
+    grid-template-columns: 68px minmax(0, 1fr);
+  }
+
+  .game-art {
+    width: 68px;
+    height: 68px;
+  }
+
+  .overlay-head strong,
+  .game-copy strong {
+    font-size: 18px;
+  }
+
+  .overlay-action {
+    min-height: 40px;
+  }
+}

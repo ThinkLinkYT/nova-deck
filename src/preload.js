@@ -10,6 +10,13 @@ contextBridge.exposeInMainWorld("nova", {
   updateControllerSettings: (settings) => ipcRenderer.invoke("settings:update-controller", settings),
   getAppSettings: () => ipcRenderer.invoke("settings:get-app"),
   updateAppSettings: (settings) => ipcRenderer.invoke("settings:update-app", settings),
+  getSystemSnapshot: () => ipcRenderer.invoke("system:get-snapshot"),
+  setOverlayContext: (context) => ipcRenderer.invoke("overlay:set-context", context),
+  getOverlayContext: () => ipcRenderer.invoke("overlay:get-context"),
+  toggleOverlay: () => ipcRenderer.invoke("overlay:toggle"),
+  hideOverlay: () => ipcRenderer.invoke("overlay:hide"),
+  runOverlayAction: (action) => ipcRenderer.invoke("overlay:main-action", action),
+  launchOverlayGame: () => ipcRenderer.invoke("overlay:launch-current"),
   getGameProfiles: () => ipcRenderer.invoke("profiles:get-all"),
   updateGameProfile: (gameId, update) => ipcRenderer.invoke("profiles:update", gameId, update),
   getStartupEnabled: () => ipcRenderer.invoke("settings:get-startup-enabled"),
@@ -37,6 +44,16 @@ contextBridge.exposeInMainWorld("nova", {
     const listener = (_event, isFullscreen) => callback(Boolean(isFullscreen));
     ipcRenderer.on("app:fullscreen-changed", listener);
     return () => ipcRenderer.removeListener("app:fullscreen-changed", listener);
+  },
+  onAppAction: (callback) => {
+    const listener = (_event, action) => callback(action);
+    ipcRenderer.on("app:action", listener);
+    return () => ipcRenderer.removeListener("app:action", listener);
+  },
+  onOverlayContext: (callback) => {
+    const listener = (_event, context) => callback(context);
+    ipcRenderer.on("overlay:context", listener);
+    return () => ipcRenderer.removeListener("overlay:context", listener);
   },
   getMeta: () => ipcRenderer.invoke("app:get-meta")
 });

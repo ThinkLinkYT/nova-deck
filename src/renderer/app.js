@@ -110,6 +110,7 @@ const DEFAULT_APP_SETTINGS = {
   rescanOnStart: true,
   reduceMotion: false,
   showHiddenLaunchers: false,
+  overlayEnabled: true,
   theme: "nova"
 };
 
@@ -149,6 +150,7 @@ const state = {
   wheelName: "",
   controllerSettings: cloneControllerSettings(DEFAULT_CONTROLLER_SETTINGS),
   appSettings: cloneSettings(DEFAULT_APP_SETTINGS),
+  settingsTab: "settings",
   gameProfiles: {},
   startupEnabled: false,
   audioOutputs: [],
@@ -162,6 +164,10 @@ const state = {
     transferredBytes: 0,
     totalBytes: 0
   },
+  systemSnapshot: null,
+  systemSnapshotLoading: false,
+  systemSnapshotError: "",
+  systemSnapshotTimer: null,
   appPreferences: null,
   javaBridgeProfile: null,
   javaBridgeNativeActive: false,
@@ -184,6 +190,8 @@ const state = {
   controllerNavLastAt: 0,
   controllerNavRepeats: 0,
   controllerFocusKey: "",
+  overlayComboPressed: false,
+  overlayContextSyncTimer: null,
   quickMenuOpen: false,
   controllerSnapshot: null,
   wheelSnapshot: null,
@@ -280,6 +288,7 @@ function bindEvents() {
     renderController();
   });
   window.addEventListener("beforeunload", () => {
+    stopSystemMonitor();
     releaseJavaBridgeInputs();
     if (api.clearInputBridgeProfile) {
       api.clearInputBridgeProfile();
@@ -297,6 +306,10 @@ function bindEvents() {
       render();
     }
   });
+
+  if (api.onAppAction) {
+    api.onAppAction(handleAppAction);
+  }
 }
 
 async function loadMeta() {
@@ -455,6 +468,11 @@ function setView(view, focusPreferred = false) {
   if (view !== "library") {
     state.sourceFilter = "All";
   }
+  if (view !== "settings") {
+    stopSystemMonitor();
+  } else if (state.settingsTab === "task-manager") {
+    startSystemMonitor();
+  }
 
   document.querySelectorAll(".rail-button").forEach((button) => {
     button.classList.toggle("active", button.dataset.view === view);
@@ -506,6 +524,7 @@ function render() {
   renderFullscreenButton();
   renderQuickMenu();
   restoreControllerFocus();
+  queueOverlayContextSync();
 }
 
 function renderHero() {
@@ -945,7 +964,7 @@ function renderPreferenceSlider(slider) {
 }
 
 function renderSettings() {
-  elements.libraryCount.textContent = "System";
+  elements.libraryCount.textContent = state.settingsTab === "task-manager" ? "Live" : "System";
   const meta = state.meta || {};
   const sources = getSourceStats();
   const controllerName = state.controllerName ? trimControllerName(state.controllerName) : "No controller connected";
@@ -964,6 +983,8 @@ function renderSettings() {
         </div>
       </section>
 
+      ${renderSettingsTabs()}
+      ${state.settingsTab === "task-manager" ? renderTaskManager() : `
       <section class="settings-group">
         <div class="settings-group-head">
           <strong>System</strong>
@@ -991,6 +1012,16 @@ function renderSettings() {
           <section class="settings-card">
             <strong>Display</strong>
             <button class="settings-action" data-action="fullscreen">${state.isFullscreen ? "Exit fullscreen" : "Enter fullscreen"}</button>
+          </section>
+          <section class="settings-card">
+            <div class="settings-card-head">
+              <div>
+                <strong>Overlay</strong>
+                <p>In-game side panel.</p>
+              </div>
+              ${renderToggleButton("toggle-overlay", state.appSettings.overlayEnabled, "Enable")}
+            </div>
+            <button class="settings-action" data-action="open-overlay"${state.appSettings.overlayEnabled ? "" : " disabled"}>Open overlay</button>
           </section>
           <section class="settings-card">
             <strong>Updates</strong>
@@ -1123,6 +1154,144 @@ function renderSettings() {
           </section>
         </div>
       </section>
+      `}
+    </div>
+  `;
+}
+
+function renderSettingsTabs() {
+  return `
+    <div class="settings-tabs" role="tablist" aria-label="Settings sections">
+      <button class="settings-tab${state.settingsTab === "settings" ? " active" : ""}" role="tab" aria-selected="${state.settingsTab === "settings" ? "true" : "false"}" data-action="set-settings-tab" data-settings-tab="settings">Settings</button>
+      <button class="settings-tab${state.settingsTab === "task-manager" ? " active" : ""}" role="tab" aria-selected="${state.settingsTab === "task-manager" ? "true" : "false"}" data-action="set-settings-tab" data-settings-tab="task-manager">Task Manager</button>
+    </div>
+  `;
+}
+
+function renderTaskManager() {
+  const snapshot = state.systemSnapshot || getEmptySystemSnapshot();
+  const specs = snapshot.specs || {};
+  const usage = snapshot.usage || {};
+  const memory = usage.memory || {};
+  const cpuPercent = clampNumber(usage.cpuPercent, 0, 0, 100);
+  const memoryPercent = clampNumber(memory.percent, 0, 0, 100);
+  const updatedLabel = snapshot.timestamp ? `Updated ${formatTime(snapshot.timestamp)}` : "Waiting for live stats";
+  const cpu = specs.cpu || {};
+  const windows = specs.windows || {};
+  const gpus = Array.isArray(specs.gpu) ? specs.gpu : [];
+  const drives = Array.isArray(usage.drives) ? usage.drives : [];
+  const processes = Array.isArray(usage.processes) ? usage.processes : [];
+
+  return `
+    <section class="task-manager-page">
+      <div class="task-manager-head">
+        <div>
+          <strong>Task Manager</strong>
+          <span>${escapeHtml(updatedLabel)}</span>
+        </div>
+        <button class="settings-action compact" data-action="refresh-system-snapshot"${state.systemSnapshotLoading ? " disabled" : ""}>${state.systemSnapshotLoading ? "Refreshing" : "Refresh"}</button>
+      </div>
+
+      ${state.systemSnapshotError ? `<div class="preference-note">${escapeHtml(state.systemSnapshotError)}</div>` : ""}
+
+      <div class="usage-grid">
+        ${renderUsageTile("CPU", `${Math.round(cpuPercent)}%`, cpuPercent, `${cpu.logicalCores || 0} logical cores`)}
+        ${renderUsageTile("Memory", `${Math.round(memoryPercent)}%`, memoryPercent, `${formatBytes(memory.usedBytes || 0)} / ${formatBytes(memory.totalBytes || 0)}`)}
+        ${renderUsageTile("Nova Deck", formatBytes(usage.novaMemoryBytes || 0), Math.min(100, ((usage.novaMemoryBytes || 0) / Math.max(1, memory.totalBytes || 1)) * 100), "private memory")}
+        ${renderUsageTile("Uptime", formatDuration(specs.uptimeSeconds || 0), 100, "since Windows boot")}
+      </div>
+
+      <div class="task-grid">
+        <section class="task-panel">
+          <div class="task-panel-head">
+            <strong>PC Specs</strong>
+            <span>${escapeHtml(specs.hostname || "Local PC")}</span>
+          </div>
+          <div class="spec-list">
+            ${renderSpecRow("CPU", cpu.model || "Unknown CPU")}
+            ${renderSpecRow("Speed", cpu.speedMhz ? `${cpu.speedMhz} MHz base` : "Unavailable")}
+            ${renderSpecRow("RAM", formatBytes(specs.memoryTotalBytes || 0))}
+            ${renderSpecRow("GPU", gpus.length ? gpus.map((gpu) => `${gpu.device}${gpu.active ? " active" : ""}`).join(", ") : "Unavailable")}
+            ${renderSpecRow("OS", windows.osName || specs.platform || "Windows")}
+            ${renderSpecRow("Build", [windows.osVersion, windows.buildNumber].filter(Boolean).join(" / ") || "Unavailable")}
+            ${renderSpecRow("PC", [windows.manufacturer, windows.model].filter(Boolean).join(" ") || "Unavailable")}
+            ${renderSpecRow("Architecture", specs.arch || "Unavailable")}
+          </div>
+        </section>
+
+        <section class="task-panel">
+          <div class="task-panel-head">
+            <strong>Drives</strong>
+            <span>${drives.length} local ${drives.length === 1 ? "drive" : "drives"}</span>
+          </div>
+          <div class="drive-list">
+            ${drives.length ? drives.map(renderDriveRow).join("") : `<div class="task-empty">No local drive stats available.</div>`}
+          </div>
+        </section>
+      </div>
+
+      <section class="task-panel process-panel">
+        <div class="task-panel-head">
+          <strong>Top Processes</strong>
+          <span>Sorted by memory usage</span>
+        </div>
+        <div class="process-table">
+          <div class="process-row header">
+            <span>App</span>
+            <span>PID</span>
+            <span>Memory</span>
+            <span>CPU Time</span>
+          </div>
+          ${processes.length ? processes.map(renderProcessRow).join("") : `<div class="task-empty">No process data available.</div>`}
+        </div>
+      </section>
+    </section>
+  `;
+}
+
+function renderUsageTile(label, value, percent, detail) {
+  const safePercent = clampNumber(percent, 0, 0, 100);
+  return `
+    <section class="usage-tile" style="--usage:${safePercent}%">
+      <span>${escapeHtml(label)}</span>
+      <strong>${escapeHtml(value)}</strong>
+      <div class="usage-meter"><i></i></div>
+      <b>${escapeHtml(detail)}</b>
+    </section>
+  `;
+}
+
+function renderSpecRow(label, value) {
+  return `
+    <div>
+      <span>${escapeHtml(label)}</span>
+      <b>${escapeHtml(value)}</b>
+    </div>
+  `;
+}
+
+function renderDriveRow(drive) {
+  const percent = clampNumber(drive.percent, 0, 0, 100);
+  return `
+    <div class="drive-row" style="--usage:${percent}%">
+      <div>
+        <strong>${escapeHtml(drive.id || "Drive")}</strong>
+        <span>${escapeHtml(drive.name || "Local Disk")}</span>
+      </div>
+      <div class="usage-meter"><i></i></div>
+      <b>${Math.round(percent)}% used</b>
+      <em>${escapeHtml(`${formatBytes(drive.freeBytes || 0)} free of ${formatBytes(drive.totalBytes || 0)}`)}</em>
+    </div>
+  `;
+}
+
+function renderProcessRow(processInfo) {
+  return `
+    <div class="process-row">
+      <span title="${escapeHtml(processInfo.title || processInfo.name)}">${escapeHtml(processInfo.name || "Process")}</span>
+      <span>${escapeHtml(String(processInfo.id || ""))}</span>
+      <span>${escapeHtml(formatBytes(processInfo.memoryBytes || 0))}</span>
+      <span>${escapeHtml(formatCpuTime(processInfo.cpuSeconds || 0))}</span>
     </div>
   `;
 }
@@ -1352,6 +1521,7 @@ function renderQuickMenu() {
       </div>
       <div class="quick-action-grid">
         <button class="quick-action primary" data-action="play-selected">Play</button>
+        <button class="quick-action" data-action="open-overlay"${state.appSettings.overlayEnabled ? "" : " disabled"}>Overlay</button>
         <button class="quick-action" data-action="app-preferences">Preferences</button>
         <button class="quick-action" data-action="change-artwork">Icon</button>
         <button class="quick-action" data-action="toggle-favorite">${profile.favorite ? "Unfavorite" : "Favorite"}</button>
@@ -1506,7 +1676,7 @@ function renderViewTitle() {
   const titles = {
     home: "Home",
     library: "Apps",
-    settings: "Settings"
+    settings: state.settingsTab === "task-manager" ? "Task Manager" : "Settings"
   };
   elements.viewTitle.textContent = titles[state.activeView] || "Home";
 }
@@ -1571,8 +1741,16 @@ function handleContentClick(event) {
     startButtonCapture(actionButton.dataset.mapAction);
   } else if (action === "reset-controller-mapping") {
     resetControllerSettings();
+  } else if (action === "set-settings-tab") {
+    setSettingsTab(actionButton.dataset.settingsTab || "settings");
+  } else if (action === "refresh-system-snapshot") {
+    refreshSystemSnapshot();
   } else if (action === "toggle-startup") {
     toggleStartup();
+  } else if (action === "toggle-overlay") {
+    updateAppSetting("overlayEnabled", !state.appSettings.overlayEnabled);
+  } else if (action === "open-overlay") {
+    openOverlay();
   } else if (action === "toggle-reduce-motion") {
     updateAppSetting("reduceMotion", !state.appSettings.reduceMotion);
   } else if (action === "toggle-hidden-launchers") {
@@ -1696,6 +1874,12 @@ function handleImageError(event) {
 }
 
 function handleKeyDown(event) {
+  if ((event.ctrlKey || event.metaKey) && event.shiftKey && (event.key === "n" || event.key === "N")) {
+    event.preventDefault();
+    openOverlay();
+    return;
+  }
+
   if ((event.key === "q" || event.key === "Q") && !isEditableTarget(event.target)) {
     event.preventDefault();
     toggleQuickMenu();
@@ -1784,6 +1968,9 @@ function handleQuickMenuClick(event) {
   } else if (action === "scan") {
     closeQuickMenu();
     scanLibrary();
+  } else if (action === "open-overlay") {
+    closeQuickMenu();
+    openOverlay();
   } else if (action === "change-artwork") {
     closeQuickMenu();
     changeSelectedArtwork();
@@ -1830,6 +2017,7 @@ function pollGamepad() {
   if (!gamepad) {
     releaseJavaBridgeInputs();
     resetControllerNavigation();
+    state.overlayComboPressed = false;
     state.lastButtons.clear();
     updateControllerSnapshot(null);
     updateWheelSnapshot(null);
@@ -1838,6 +2026,11 @@ function pollGamepad() {
 
   const now = performance.now();
   if (handleMappingCapture(gamepad)) {
+    resetControllerNavigation();
+    return;
+  }
+
+  if (handleOverlayControllerCombo(gamepad)) {
     resetControllerNavigation();
     return;
   }
@@ -1873,6 +2066,18 @@ function onMappedActionPress(gamepad, action, handler) {
   }
 
   state.lastButtons.set(key, pressed);
+}
+
+function handleOverlayControllerCombo(gamepad) {
+  const pressed = isPressed(gamepad, 8) && isPressed(gamepad, 9);
+  if (pressed && !state.overlayComboPressed) {
+    state.overlayComboPressed = true;
+    openOverlay();
+    return true;
+  }
+
+  state.overlayComboPressed = pressed;
+  return pressed;
 }
 
 function pollControllerNavigation(gamepad, now) {
@@ -2591,6 +2796,7 @@ function getPreferredFocusElement(controls = getFocusableControls()) {
 
   if (state.activeView === "settings") {
     return getFirstMatchingControl(controls, [
+      ".settings-tab",
       ".toggle-row",
       ".settings-select",
       "[data-controller-setting]",
@@ -2630,8 +2836,9 @@ function getFocusableControls() {
     ".pref-select",
     ".pref-toggle",
     ".pref-range",
-    ".settings-action",
-    ".toggle-row",
+      ".settings-action",
+      ".settings-tab",
+      ".toggle-row",
     ".settings-select",
     ".theme-choice",
     ".profile-input",
@@ -2788,6 +2995,9 @@ function getFocusKey(element) {
   if (element.classList.contains("theme-choice")) {
     return `theme:${element.dataset.theme || ""}`;
   }
+  if (element.classList.contains("settings-tab")) {
+    return `settings-tab:${element.dataset.settingsTab || ""}`;
+  }
   if (element.classList.contains("quick-action")) {
     return `quick:${element.dataset.action || ""}:${element.dataset.view || ""}:${element.dataset.powerAction || ""}`;
   }
@@ -2906,6 +3116,165 @@ async function resetControllerSettings() {
   state.lastButtons.clear();
   render();
   showToast("Controller mapping reset.");
+}
+
+function setSettingsTab(tab) {
+  const nextTab = tab === "task-manager" ? "task-manager" : "settings";
+  if (state.settingsTab === nextTab) {
+    return;
+  }
+
+  state.settingsTab = nextTab;
+  render();
+  if (nextTab === "task-manager") {
+    startSystemMonitor();
+  } else {
+    stopSystemMonitor();
+  }
+  focusPreferredControl();
+}
+
+function handleAppAction(action) {
+  if (action === "home" || action === "library") {
+    setView(action, true);
+  } else if (action === "settings") {
+    state.settingsTab = "settings";
+    setView("settings", true);
+  } else if (action === "task-manager") {
+    state.settingsTab = "task-manager";
+    setView("settings", true);
+  } else if (action === "scan") {
+    scanLibrary();
+  } else if (action === "fullscreen") {
+    toggleFullscreen();
+  }
+}
+
+async function openOverlay() {
+  if (!api.toggleOverlay) {
+    return;
+  }
+
+  if (!state.appSettings.overlayEnabled) {
+    showToast("Overlay is disabled.");
+    return;
+  }
+
+  await syncOverlayContext();
+  const opened = await api.toggleOverlay();
+  if (opened) {
+    showToast("Overlay opened.");
+  }
+}
+
+function queueOverlayContextSync() {
+  if (!api.setOverlayContext) {
+    return;
+  }
+
+  clearTimeout(state.overlayContextSyncTimer);
+  state.overlayContextSyncTimer = setTimeout(() => {
+    syncOverlayContext();
+  }, 60);
+}
+
+async function syncOverlayContext() {
+  if (!api.setOverlayContext) {
+    return false;
+  }
+
+  clearTimeout(state.overlayContextSyncTimer);
+  state.overlayContextSyncTimer = null;
+
+  try {
+    await api.setOverlayContext(buildOverlayContext());
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function buildOverlayContext() {
+  const game = getSelectedGame();
+  const profile = getGameProfile(game);
+  return {
+    activeView: state.activeView,
+    libraryCount: getVisibleGames().length,
+    controllerLabel: getQuickControllerLabel(),
+    wheelLabel: state.wheelName ? trimControllerName(state.wheelName) : "No wheel",
+    inputLabel: getSelectedBridgeLabel(game),
+    themeLabel: getThemeLabel(state.appSettings.theme),
+    audioLabel: state.appSettings.audioOutputLabel || "System default",
+    currentGame: game ? {
+      id: game.id,
+      title: game.title,
+      source: game.source,
+      installPath: game.installPath || "",
+      launchTarget: game.launchTarget || "",
+      executablePath: game.executablePath || "",
+      focusProcess: game.focusProcess || "",
+      launchType: game.launchType || "",
+      launchArgs: game.launchArgs || "",
+      artworkUrl: game.artworkUrl || "",
+      custom: Boolean(game.custom)
+    } : null,
+    currentProfile: profile ? {
+      favorite: Boolean(profile.favorite),
+      accountLabel: profile.accountLabel || "",
+      profileName: profile.profileName || "",
+      launchArgs: profile.launchArgs || "",
+      playCount: Number(profile.playCount || 0),
+      lastPlayedAt: Number(profile.lastPlayedAt || 0)
+    } : {}
+  };
+}
+
+function startSystemMonitor() {
+  if (state.systemSnapshotTimer) {
+    return;
+  }
+
+  refreshSystemSnapshot();
+  state.systemSnapshotTimer = setInterval(() => {
+    refreshSystemSnapshot({ silent: true });
+  }, 2500);
+}
+
+function stopSystemMonitor() {
+  if (state.systemSnapshotTimer) {
+    clearInterval(state.systemSnapshotTimer);
+    state.systemSnapshotTimer = null;
+  }
+}
+
+async function refreshSystemSnapshot(options = {}) {
+  if (!api.getSystemSnapshot || state.systemSnapshotLoading) {
+    return;
+  }
+
+  state.systemSnapshotLoading = true;
+  if (!options.silent && state.activeView === "settings" && state.settingsTab === "task-manager") {
+    renderPreservingScroll();
+  }
+
+  try {
+    state.systemSnapshot = normalizeSystemSnapshot(await api.getSystemSnapshot());
+    state.systemSnapshotError = "";
+  } catch {
+    state.systemSnapshotError = "System stats could not be loaded right now.";
+  } finally {
+    state.systemSnapshotLoading = false;
+  }
+
+  if (state.activeView === "settings" && state.settingsTab === "task-manager") {
+    renderPreservingScroll();
+  }
+}
+
+function renderPreservingScroll() {
+  const scrollTop = elements.gameGrid.scrollTop;
+  render();
+  elements.gameGrid.scrollTop = scrollTop;
 }
 
 async function toggleStartup() {
@@ -3495,6 +3864,7 @@ function normalizeAppSettings(settings) {
   nextSettings.rescanOnStart = typeof input.rescanOnStart === "boolean" ? input.rescanOnStart : DEFAULT_APP_SETTINGS.rescanOnStart;
   nextSettings.reduceMotion = typeof input.reduceMotion === "boolean" ? input.reduceMotion : DEFAULT_APP_SETTINGS.reduceMotion;
   nextSettings.showHiddenLaunchers = typeof input.showHiddenLaunchers === "boolean" ? input.showHiddenLaunchers : DEFAULT_APP_SETTINGS.showHiddenLaunchers;
+  nextSettings.overlayEnabled = typeof input.overlayEnabled === "boolean" ? input.overlayEnabled : DEFAULT_APP_SETTINGS.overlayEnabled;
   nextSettings.theme = THEMES.some((theme) => theme.id === input.theme) ? input.theme : DEFAULT_APP_SETTINGS.theme;
   return nextSettings;
 }
@@ -3511,6 +3881,92 @@ function normalizeUpdateStatus(status = {}) {
     transferredBytes: clampNumber(input.transferredBytes, 0, 0, Number.MAX_SAFE_INTEGER),
     totalBytes: clampNumber(input.totalBytes, 0, 0, Number.MAX_SAFE_INTEGER)
   };
+}
+
+function normalizeSystemSnapshot(snapshot = {}) {
+  const input = snapshot && typeof snapshot === "object" ? snapshot : {};
+  const specs = input.specs && typeof input.specs === "object" ? input.specs : {};
+  const usage = input.usage && typeof input.usage === "object" ? input.usage : {};
+  const cpu = specs.cpu && typeof specs.cpu === "object" ? specs.cpu : {};
+  const memory = usage.memory && typeof usage.memory === "object" ? usage.memory : {};
+  const windows = specs.windows && typeof specs.windows === "object" ? specs.windows : {};
+  return {
+    timestamp: normalizePositiveNumber(input.timestamp),
+    specs: {
+      hostname: normalizeOptionalText(specs.hostname, 120),
+      platform: normalizeOptionalText(specs.platform, 120),
+      arch: normalizeOptionalText(specs.arch, 32),
+      uptimeSeconds: clampNumber(specs.uptimeSeconds, 0, 0, Number.MAX_SAFE_INTEGER),
+      memoryTotalBytes: clampNumber(specs.memoryTotalBytes, 0, 0, Number.MAX_SAFE_INTEGER),
+      cpu: {
+        model: normalizeOptionalText(cpu.model, 160),
+        logicalCores: clampNumber(cpu.logicalCores, 0, 0, 512),
+        speedMhz: clampNumber(cpu.speedMhz, 0, 0, 20000)
+      },
+      gpu: (Array.isArray(specs.gpu) ? specs.gpu : []).map((gpu) => ({
+        vendor: normalizeOptionalText(gpu && gpu.vendor, 120),
+        device: normalizeOptionalText(gpu && gpu.device, 160),
+        active: Boolean(gpu && gpu.active)
+      })),
+      windows: {
+        manufacturer: normalizeOptionalText(windows.manufacturer, 120),
+        model: normalizeOptionalText(windows.model, 120),
+        osName: normalizeOptionalText(windows.osName, 160),
+        osVersion: normalizeOptionalText(windows.osVersion, 80),
+        buildNumber: normalizeOptionalText(windows.buildNumber, 80),
+        lastBoot: normalizeOptionalText(windows.lastBoot, 120)
+      }
+    },
+    usage: {
+      cpuPercent: clampNumber(usage.cpuPercent, 0, 0, 100),
+      novaMemoryBytes: clampNumber(usage.novaMemoryBytes, 0, 0, Number.MAX_SAFE_INTEGER),
+      memory: {
+        totalBytes: clampNumber(memory.totalBytes, 0, 0, Number.MAX_SAFE_INTEGER),
+        freeBytes: clampNumber(memory.freeBytes, 0, 0, Number.MAX_SAFE_INTEGER),
+        usedBytes: clampNumber(memory.usedBytes, 0, 0, Number.MAX_SAFE_INTEGER),
+        percent: clampNumber(memory.percent, 0, 0, 100)
+      },
+      drives: (Array.isArray(usage.drives) ? usage.drives : []).map(normalizeDriveSnapshot),
+      processes: (Array.isArray(usage.processes) ? usage.processes : []).map(normalizeProcessSnapshot)
+    }
+  };
+}
+
+function normalizeDriveSnapshot(drive = {}) {
+  return {
+    id: normalizeOptionalText(drive.id, 24),
+    name: normalizeOptionalText(drive.name, 120),
+    totalBytes: clampNumber(drive.totalBytes, 0, 0, Number.MAX_SAFE_INTEGER),
+    freeBytes: clampNumber(drive.freeBytes, 0, 0, Number.MAX_SAFE_INTEGER),
+    usedBytes: clampNumber(drive.usedBytes, 0, 0, Number.MAX_SAFE_INTEGER),
+    percent: clampNumber(drive.percent, 0, 0, 100)
+  };
+}
+
+function normalizeProcessSnapshot(processInfo = {}) {
+  return {
+    name: normalizeOptionalText(processInfo.name, 120),
+    id: clampNumber(processInfo.id, 0, 0, Number.MAX_SAFE_INTEGER),
+    cpuSeconds: clampNumber(processInfo.cpuSeconds, 0, 0, Number.MAX_SAFE_INTEGER),
+    memoryBytes: clampNumber(processInfo.memoryBytes, 0, 0, Number.MAX_SAFE_INTEGER),
+    title: normalizeOptionalText(processInfo.title, 180)
+  };
+}
+
+function getEmptySystemSnapshot() {
+  return normalizeSystemSnapshot({
+    timestamp: 0,
+    specs: {
+      cpu: {},
+      gpu: [],
+      windows: {}
+    },
+    usage: {
+      memory: {},
+      drives: [],
+      processes: []
+    }
+  });
 }
 
 function cloneControllerSettings(settings) {
@@ -3551,6 +4007,42 @@ function formatBytes(value) {
     unitIndex += 1;
   }
   return `${size >= 10 ? size.toFixed(0) : size.toFixed(1)} ${units[unitIndex]}`;
+}
+
+function formatDuration(seconds) {
+  const totalSeconds = Math.max(0, Math.round(Number(seconds) || 0));
+  const days = Math.floor(totalSeconds / 86400);
+  const hours = Math.floor((totalSeconds % 86400) / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  if (days > 0) {
+    return `${days}d ${hours}h`;
+  }
+  if (hours > 0) {
+    return `${hours}h ${minutes}m`;
+  }
+  return `${minutes}m`;
+}
+
+function formatCpuTime(seconds) {
+  const value = Number(seconds) || 0;
+  if (value >= 3600) {
+    return `${(value / 3600).toFixed(1)}h`;
+  }
+  if (value >= 60) {
+    return `${Math.round(value / 60)}m`;
+  }
+  return `${Math.round(value)}s`;
+}
+
+function formatTime(timestamp) {
+  if (!timestamp) {
+    return "";
+  }
+  return new Intl.DateTimeFormat([], {
+    hour: "numeric",
+    minute: "2-digit",
+    second: "2-digit"
+  }).format(new Date(timestamp));
 }
 
 function getUpdateProgressDetail(status) {
@@ -4033,6 +4525,75 @@ function createPreviewApi() {
       previewAppSettings = normalizeAppSettings(settings);
       return cloneSettings(previewAppSettings);
     },
+    async getSystemSnapshot() {
+      const memoryTotal = 32 * 1024 ** 3;
+      const memoryUsed = 17.4 * 1024 ** 3;
+      return normalizeSystemSnapshot({
+        timestamp: Date.now(),
+        specs: {
+          hostname: "Preview-PC",
+          platform: "Windows 11",
+          arch: "x64",
+          uptimeSeconds: 131400,
+          memoryTotalBytes: memoryTotal,
+          cpu: {
+            model: "AMD Ryzen Preview 8-Core",
+            logicalCores: 16,
+            speedMhz: 3800
+          },
+          gpu: [
+            { vendor: "NVIDIA", device: "GeForce RTX Preview", active: true }
+          ],
+          windows: {
+            manufacturer: "Nova",
+            model: "Deck Preview Rig",
+            osName: "Microsoft Windows 11 Pro",
+            osVersion: "10.0.26200",
+            buildNumber: "26200"
+          }
+        },
+        usage: {
+          cpuPercent: 28 + Math.round(Math.sin(Date.now() / 1400) * 9),
+          novaMemoryBytes: 420 * 1024 ** 2,
+          memory: {
+            totalBytes: memoryTotal,
+            usedBytes: memoryUsed,
+            freeBytes: memoryTotal - memoryUsed,
+            percent: (memoryUsed / memoryTotal) * 100
+          },
+          drives: [
+            { id: "C:", name: "Windows", totalBytes: 1024 * 1024 ** 3, freeBytes: 312 * 1024 ** 3, usedBytes: 712 * 1024 ** 3, percent: 69.5 },
+            { id: "D:", name: "Games", totalBytes: 2048 * 1024 ** 3, freeBytes: 870 * 1024 ** 3, usedBytes: 1178 * 1024 ** 3, percent: 57.5 }
+          ],
+          processes: [
+            { name: "Nova Deck", id: 4212, cpuSeconds: 134, memoryBytes: 420 * 1024 ** 2, title: "Nova Deck" },
+            { name: "ForzaHorizon5", id: 9088, cpuSeconds: 5220, memoryBytes: 6144 * 1024 ** 2, title: "Forza Horizon 5" },
+            { name: "Steam", id: 6200, cpuSeconds: 730, memoryBytes: 690 * 1024 ** 2, title: "Steam" }
+          ]
+        }
+      });
+    },
+    async setOverlayContext() {
+      return true;
+    },
+    async getOverlayContext() {
+      return {};
+    },
+    async toggleOverlay() {
+      return true;
+    },
+    async hideOverlay() {
+      return true;
+    },
+    async runOverlayAction() {
+      return true;
+    },
+    async launchOverlayGame() {
+      return {
+        ok: true,
+        message: "Preview launch request sent."
+      };
+    },
     async getGameProfiles() {
       return cloneSettings(previewGameProfiles);
     },
@@ -4205,6 +4766,12 @@ function createPreviewApi() {
       const listener = () => callback(Boolean(document.fullscreenElement));
       document.addEventListener("fullscreenchange", listener);
       return () => document.removeEventListener("fullscreenchange", listener);
+    },
+    onAppAction() {
+      return () => {};
+    },
+    onOverlayContext() {
+      return () => {};
     },
     async getMeta() {
       return {

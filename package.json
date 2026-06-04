@@ -1,6 +1,6 @@
 {
   "name": "nova-deck",
-  "version": "0.1.10",
+  "version": "0.1.11",
   "description": "A local-first Windows console shell for PC games.",
   "main": "src/main.js",
   "type": "commonjs",
@@ -20,7 +20,7 @@
     "install-app": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/install.ps1 -Launch",
     "dist:win": "electron-builder --win --x64",
     "publish:win": "electron-builder --win --x64 --publish always",
-    "check": "node --check src/main.js && node --check src/preload.js && node --check src/scanner.js && node --check src/launcher.js && node --check src/storage.js && node --check src/icon-cache.js && node --check src/input-bridge.js && node --check src/game-preferences.js && node --check src/updater.js && node --check src/renderer/app.js"
+    "check": "node --check src/main.js && node --check src/preload.js && node --check src/scanner.js && node --check src/launcher.js && node --check src/storage.js && node --check src/icon-cache.js && node --check src/input-bridge.js && node --check src/game-preferences.js && node --check src/system-monitor.js && node --check src/updater.js && node --check src/renderer/app.js && node --check src/renderer/overlay.js"
   },
   "build": {
     "appId": "com.thinklinkyt.novadeck",

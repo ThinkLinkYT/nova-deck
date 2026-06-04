@@ -1,12 +1,13 @@
 const path = require("path");
 const fs = require("fs");
 const { execFile } = require("child_process");
-const { app, BrowserWindow, dialog, ipcMain, shell } = require("electron");
+const { app, BrowserWindow, dialog, globalShortcut, ipcMain, screen, shell } = require("electron");
 const { scanGames, gameFromFile } = require("./scanner");
 const { launchGame } = require("./launcher");
 const { createStore } = require("./storage");
 const { enrichGamesWithArtwork, pathToFileUrl } = require("./icon-cache");
 const { getGamePreferences, updateGamePreference } = require("./game-preferences");
+const { getSystemSnapshot } = require("./system-monitor");
 const {
   setupInputBridge,
   sendVirtualInput,
@@ -17,7 +18,9 @@ const {
 const { setupUpdater, getUpdateStatus, checkForUpdates, installUpdate } = require("./updater");
 
 let mainWindow;
+let overlayWindow;
 let store;
+let overlayContext = {};
 
 function createWindow() {
   mainWindow = new BrowserWindow({
@@ -53,6 +56,7 @@ app.whenReady().then(() => {
   app.setAppUserModelId("local.nova.deck");
   store = createStore(app.getPath("userData"));
   createWindow();
+  registerOverlayShortcuts();
   setupInputBridge({ app });
   setupUpdater({
     app,
@@ -73,7 +77,12 @@ app.on("window-all-closed", () => {
 });
 
 app.on("before-quit", () => {
+  globalShortcut.unregisterAll();
   stopInputBridge();
+});
+
+app.on("will-quit", () => {
+  globalShortcut.unregisterAll();
 });
 
 ipcMain.handle("library:scan", async () => {
@@ -147,6 +156,39 @@ ipcMain.handle("settings:get-app", () => {
 
 ipcMain.handle("settings:update-app", (_event, settings) => {
   return store.updateAppSettings(settings);
+});
+
+ipcMain.handle("system:get-snapshot", () => {
+  return getSystemSnapshot(app);
+});
+
+ipcMain.handle("overlay:set-context", (_event, context) => {
+  overlayContext = normalizeOverlayContext(context);
+  if (overlayWindow && !overlayWindow.isDestroyed()) {
+    overlayWindow.webContents.send("overlay:context", buildOverlayPayload());
+  }
+  return true;
+});
+
+ipcMain.handle("overlay:get-context", () => {
+  return buildOverlayPayload();
+});
+
+ipcMain.handle("overlay:toggle", () => {
+  return toggleOverlay();
+});
+
+ipcMain.handle("overlay:hide", () => {
+  hideOverlay();
+  return true;
+});
+
+ipcMain.handle("overlay:main-action", (_event, action) => {
+  return runOverlayMainAction(action);
+});
+
+ipcMain.handle("overlay:launch-current", () => {
+  return launchOverlayGame();
 });
 
 ipcMain.handle("profiles:get-all", () => {
@@ -257,6 +299,214 @@ ipcMain.handle("app:open-path", async (_event, targetPath) => {
 ipcMain.handle("app:power-action", async (_event, action) => {
   return runPowerAction(action);
 });
+
+function createOverlayWindow() {
+  overlayWindow = new BrowserWindow({
+    width: 560,
+    height: 760,
+    minWidth: 440,
+    minHeight: 560,
+    maxWidth: 700,
+    maxHeight: 920,
+    show: false,
+    frame: false,
+    transparent: true,
+    resizable: false,
+    movable: true,
+    skipTaskbar: true,
+    alwaysOnTop: true,
+    fullscreenable: false,
+    backgroundColor: "#00000000",
+    icon: path.join(__dirname, "renderer", "assets", "nova-deck-icon.ico"),
+    title: "Nova Overlay",
+    webPreferences: {
+      preload: path.join(__dirname, "preload.js"),
+      contextIsolation: true,
+      nodeIntegration: false,
+      backgroundThrottling: false
+    }
+  });
+
+  overlayWindow.setAlwaysOnTop(true, "screen-saver");
+  overlayWindow.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
+  overlayWindow.loadFile(path.join(__dirname, "renderer", "overlay.html"));
+
+  overlayWindow.on("closed", () => {
+    overlayWindow = null;
+  });
+}
+
+function registerOverlayShortcuts() {
+  globalShortcut.register("CommandOrControl+Shift+N", () => {
+    toggleOverlay();
+  });
+}
+
+function toggleOverlay() {
+  if (overlayWindow && overlayWindow.isVisible()) {
+    hideOverlay();
+    return false;
+  }
+
+  return showOverlay();
+}
+
+function showOverlay() {
+  if (!isOverlayEnabled()) {
+    return false;
+  }
+
+  if (!overlayWindow || overlayWindow.isDestroyed()) {
+    createOverlayWindow();
+  }
+
+  positionOverlayWindow();
+  overlayWindow.setAlwaysOnTop(true, "screen-saver");
+  overlayWindow.show();
+  overlayWindow.focus();
+  overlayWindow.webContents.send("overlay:context", buildOverlayPayload());
+  return true;
+}
+
+function hideOverlay() {
+  if (overlayWindow && !overlayWindow.isDestroyed()) {
+    overlayWindow.hide();
+  }
+}
+
+function positionOverlayWindow() {
+  if (!overlayWindow || overlayWindow.isDestroyed()) {
+    return;
+  }
+
+  const display = screen.getDisplayNearestPoint(screen.getCursorScreenPoint()) || screen.getPrimaryDisplay();
+  const workArea = display.workArea || display.bounds;
+  const bounds = overlayWindow.getBounds();
+  const x = Math.round(workArea.x + workArea.width - bounds.width - 28);
+  const y = Math.round(workArea.y + Math.max(24, (workArea.height - bounds.height) / 2));
+  overlayWindow.setPosition(x, y, false);
+}
+
+function isOverlayEnabled() {
+  if (!store) {
+    return true;
+  }
+
+  return store.getAppSettings().overlayEnabled !== false;
+}
+
+function buildOverlayPayload() {
+  return {
+    ...overlayContext,
+    appName: "Nova Deck",
+    version: app.getVersion(),
+    overlayEnabled: isOverlayEnabled(),
+    updateStatus: getUpdateStatus(),
+    timestamp: Date.now()
+  };
+}
+
+function normalizeOverlayContext(context) {
+  const input = context && typeof context === "object" && !Array.isArray(context) ? context : {};
+  return {
+    activeView: normalizeOverlayText(input.activeView, "home", 40),
+    libraryCount: normalizeOverlayInteger(input.libraryCount),
+    controllerLabel: normalizeOverlayText(input.controllerLabel, "Disconnected", 120),
+    wheelLabel: normalizeOverlayText(input.wheelLabel, "No wheel", 120),
+    inputLabel: normalizeOverlayText(input.inputLabel, "Game default", 120),
+    themeLabel: normalizeOverlayText(input.themeLabel, "Nova", 80),
+    audioLabel: normalizeOverlayText(input.audioLabel, "System default", 180),
+    currentGame: normalizeOverlayGame(input.currentGame),
+    currentProfile: normalizeOverlayProfile(input.currentProfile)
+  };
+}
+
+function normalizeOverlayGame(game) {
+  if (!game || typeof game !== "object" || Array.isArray(game)) {
+    return null;
+  }
+
+  return {
+    id: normalizeOverlayText(game.id, "", 180),
+    title: normalizeOverlayText(game.title, "Selected Game", 180),
+    source: normalizeOverlayText(game.source, "Local", 80),
+    installPath: normalizeOverlayText(game.installPath, "", 520),
+    launchTarget: normalizeOverlayText(game.launchTarget, "", 520),
+    executablePath: normalizeOverlayText(game.executablePath, "", 520),
+    focusProcess: normalizeOverlayText(game.focusProcess, "", 120),
+    launchType: normalizeOverlayText(game.launchType, "", 80),
+    launchArgs: normalizeOverlayText(game.launchArgs, "", 260),
+    artworkUrl: normalizeOverlayText(game.artworkUrl, "", 900),
+    custom: Boolean(game.custom)
+  };
+}
+
+function normalizeOverlayProfile(profile) {
+  if (!profile || typeof profile !== "object" || Array.isArray(profile)) {
+    return {};
+  }
+
+  return {
+    favorite: Boolean(profile.favorite),
+    accountLabel: normalizeOverlayText(profile.accountLabel, "", 80),
+    profileName: normalizeOverlayText(profile.profileName, "", 80),
+    launchArgs: normalizeOverlayText(profile.launchArgs, "", 260),
+    playCount: normalizeOverlayInteger(profile.playCount),
+    lastPlayedAt: normalizeOverlayInteger(profile.lastPlayedAt)
+  };
+}
+
+function normalizeOverlayText(value, fallback, maxLength) {
+  if (typeof value !== "string") {
+    return fallback;
+  }
+
+  const text = value.trim();
+  return (text || fallback).slice(0, maxLength);
+}
+
+function normalizeOverlayInteger(value) {
+  const number = Number(value);
+  return Number.isInteger(number) && number > 0 ? number : 0;
+}
+
+function runOverlayMainAction(action) {
+  if (!mainWindow || mainWindow.isDestroyed()) {
+    createWindow();
+  }
+
+  mainWindow.show();
+  mainWindow.focus();
+  mainWindow.webContents.send("app:action", action);
+  hideOverlay();
+  return true;
+}
+
+async function launchOverlayGame() {
+  const game = overlayContext.currentGame;
+  if (!game || !game.id) {
+    return {
+      ok: false,
+      message: "No game is selected in Nova Deck."
+    };
+  }
+
+  const profile = store.getGameProfile(game.id);
+  const result = await launchGame({
+    ...game,
+    launchArgs: profile.launchArgs || game.launchArgs || ""
+  }, shell);
+
+  if (result.ok) {
+    store.updateGameProfile(game.id, {
+      ...profile,
+      playCount: Number(profile.playCount || 0) + 1,
+      lastPlayedAt: Date.now()
+    });
+  }
+
+  return result;
+}
 
 function mergeGames(detectedGames, customGames) {
   const byId = new Map();

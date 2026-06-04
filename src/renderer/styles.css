@@ -97,6 +97,7 @@ body.theme-light .home-primary-card,
 body.theme-light .home-stat-card,
 body.theme-light .home-source-strip,
 body.theme-light .settings-action,
+body.theme-light .settings-tab,
 body.theme-light .toggle-row,
 body.theme-light .settings-select,
 body.theme-light .app-action-card,
@@ -222,6 +223,10 @@ body.theme-light .wheel-axis,
 body.theme-light .wheel-pedal,
 body.theme-light .wheel-test.empty,
 body.theme-light .quick-game-card,
+body.theme-light .usage-tile,
+body.theme-light .task-panel,
+body.theme-light .process-row,
+body.theme-light .drive-row,
 body.theme-light .preference-note {
   border-color: rgba(22, 34, 50, 0.08);
   background: rgba(232, 239, 247, 0.72);
@@ -260,6 +265,7 @@ body.theme-light .stick-pad,
 body.theme-light .trigger-test div,
 body.theme-light .wheel-axis div,
 body.theme-light .wheel-pedal div,
+body.theme-light .usage-meter,
 body.theme-light .controller-dot {
   border-color: rgba(22, 34, 50, 0.1);
   background: rgba(232, 239, 247, 0.86);
@@ -275,6 +281,7 @@ body.theme-light .stick-pad {
 body.theme-light .filter-chip.active,
 body.theme-light .source-summary:hover,
 body.theme-light .settings-action:hover,
+body.theme-light .settings-tab:hover,
 body.theme-light .toggle-row:hover,
 body.theme-light .settings-select:hover,
 body.theme-light .app-action-card:hover,
@@ -283,6 +290,7 @@ body.theme-light .theme-choice:hover,
 body.theme-light .source-summary.controller-focused,
 body.theme-light .filter-chip.controller-focused,
 body.theme-light .settings-action.controller-focused,
+body.theme-light .settings-tab.controller-focused,
 body.theme-light .toggle-row.controller-focused,
 body.theme-light .settings-select.controller-focused,
 body.theme-light .app-action-card.controller-focused,
@@ -1984,6 +1992,35 @@ div.source-summary {
   background: rgba(107, 214, 255, 0.11);
 }
 
+.settings-tabs {
+  display: inline-flex;
+  width: fit-content;
+  max-width: 100%;
+  gap: 6px;
+  padding: 6px;
+  overflow-x: auto;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 8px;
+  background: rgba(0, 0, 0, 0.18);
+}
+
+.settings-tab {
+  min-height: 38px;
+  padding: 0 14px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 800;
+  background: transparent;
+}
+
+.settings-tab.active {
+  border-color: rgba(107, 214, 255, 0.5);
+  color: var(--text);
+  background: rgba(107, 214, 255, 0.13);
+}
+
 .settings-group-head {
   display: flex;
   align-items: end;
@@ -2143,6 +2180,249 @@ div.source-summary {
   min-height: 42px;
   padding: 0 12px;
   outline: 0;
+}
+
+.task-manager-page {
+  display: grid;
+  gap: 14px;
+}
+
+.task-manager-head,
+.task-panel-head {
+  display: flex;
+  align-items: start;
+  justify-content: space-between;
+  gap: 14px;
+}
+
+.task-manager-head {
+  min-height: 66px;
+  padding: 16px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 8px;
+  background:
+    linear-gradient(120deg, rgba(116, 214, 128, 0.08), transparent 44%),
+    rgba(255, 255, 255, 0.035);
+}
+
+.task-manager-head strong {
+  display: block;
+  font-size: 22px;
+}
+
+.task-manager-head span,
+.task-panel-head span {
+  display: block;
+  margin-top: 5px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.usage-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.usage-tile,
+.task-panel {
+  min-width: 0;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.035);
+}
+
+.usage-tile {
+  display: grid;
+  gap: 9px;
+  min-height: 132px;
+  align-content: center;
+  padding: 14px;
+}
+
+.usage-tile span,
+.usage-tile b {
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 900;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  text-transform: uppercase;
+}
+
+.usage-tile strong {
+  overflow: hidden;
+  font-size: 28px;
+  line-height: 1;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.usage-tile b {
+  color: var(--quiet);
+  font-size: 12px;
+  text-transform: none;
+}
+
+.usage-meter {
+  height: 10px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.usage-meter i {
+  display: block;
+  width: var(--usage, 0%);
+  height: 100%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, var(--cyan), var(--green), var(--amber));
+}
+
+.task-grid {
+  display: grid;
+  grid-template-columns: minmax(320px, 0.92fr) minmax(340px, 1.08fr);
+  gap: 12px;
+}
+
+.task-panel {
+  display: grid;
+  gap: 14px;
+  align-content: start;
+  padding: 16px;
+}
+
+.task-panel-head strong {
+  font-size: 15px;
+}
+
+.spec-list,
+.drive-list {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+}
+
+.spec-list div {
+  display: grid;
+  grid-template-columns: 108px minmax(0, 1fr);
+  gap: 12px;
+  min-height: 38px;
+  align-items: center;
+  padding: 8px 10px;
+  border-radius: 6px;
+  background: rgba(0, 0, 0, 0.18);
+}
+
+.spec-list span,
+.spec-list b {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.spec-list span {
+  color: var(--quiet);
+  font-size: 11px;
+  font-weight: 900;
+  text-transform: uppercase;
+}
+
+.spec-list b {
+  color: var(--text);
+  font-size: 12px;
+}
+
+.drive-row {
+  display: grid;
+  grid-template-columns: minmax(120px, 0.6fr) minmax(140px, 1fr) auto;
+  gap: 8px 12px;
+  align-items: center;
+  min-width: 0;
+  padding: 11px;
+  border-radius: 6px;
+  background: rgba(0, 0, 0, 0.18);
+}
+
+.drive-row div:first-child {
+  min-width: 0;
+}
+
+.drive-row strong,
+.drive-row span,
+.drive-row b,
+.drive-row em {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.drive-row strong {
+  display: block;
+  font-size: 13px;
+}
+
+.drive-row span,
+.drive-row em {
+  color: var(--muted);
+  font-size: 12px;
+  font-style: normal;
+}
+
+.drive-row b {
+  color: var(--text);
+  font-size: 12px;
+}
+
+.drive-row em {
+  grid-column: 2 / -1;
+}
+
+.process-panel {
+  min-height: 0;
+}
+
+.process-table {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+}
+
+.process-row {
+  display: grid;
+  grid-template-columns: minmax(180px, 1fr) 80px 110px 92px;
+  gap: 12px;
+  align-items: center;
+  min-width: 0;
+  min-height: 36px;
+  padding: 8px 10px;
+  border-radius: 6px;
+  background: rgba(0, 0, 0, 0.18);
+}
+
+.process-row.header {
+  color: var(--quiet);
+  font-size: 11px;
+  font-weight: 900;
+  text-transform: uppercase;
+  background: rgba(255, 255, 255, 0.035);
+}
+
+.process-row span {
+  overflow: hidden;
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.task-empty {
+  min-height: 44px;
+  align-content: center;
+  padding: 12px;
+  color: var(--muted);
+  border-radius: 6px;
+  background: rgba(0, 0, 0, 0.18);
 }
 
 .controller-card {
@@ -2592,6 +2872,14 @@ input.controller-focused {
     grid-template-columns: 1fr;
   }
 
+  .usage-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .task-grid {
+    grid-template-columns: 1fr;
+  }
+
   .apps-feature-panel {
     grid-template-columns: 156px minmax(0, 1fr);
   }
@@ -2676,6 +2964,21 @@ input.controller-focused {
   .home-grid-inner {
     grid-template-columns: repeat(auto-fill, minmax(136px, 1fr));
     grid-auto-rows: 180px;
+  }
+
+  .task-manager-head,
+  .task-panel-head {
+    display: grid;
+  }
+
+  .usage-grid,
+  .drive-row,
+  .process-row {
+    grid-template-columns: 1fr;
+  }
+
+  .drive-row em {
+    grid-column: auto;
   }
 
   .settings-card-head {
