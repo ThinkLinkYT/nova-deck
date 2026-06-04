@@ -82,13 +82,14 @@ async function scanSteamGames() {
         ? path.join(steamappsPath, "common", installDir)
         : path.join(steamappsPath, "common");
       const exePath = findLikelyExecutable(installPath, title);
+      const hasExe = exePath && fs.existsSync(exePath);
 
       games.push({
         id: `steam:${appId}`,
         title,
         source: "Steam",
-        launchType: "steam",
-        launchTarget: `steam://rungameid/${appId}`,
+        launchType: hasExe ? "exe" : "steam",
+        launchTarget: hasExe ? exePath : `steam://rungameid/${appId}`,
         appId,
         installPath,
         executablePath: exePath,
@@ -132,6 +133,7 @@ async function scanEpicGames() {
     const launchExecutable = manifest.LaunchExecutable
       ? path.join(installPath, manifest.LaunchExecutable)
       : findLikelyExecutable(installPath, title);
+    const hasExe = fs.existsSync(launchExecutable || "");
 
     if (!title || !installPath) {
       continue;
@@ -142,11 +144,11 @@ async function scanEpicGames() {
       id: `epic:${manifest.AppName || manifest.CatalogItemId || title}`,
       title,
       source: "Epic",
-      launchType: launchUrl ? "epic" : "exe",
-      launchTarget: launchUrl || launchExecutable,
+      launchType: hasExe ? "exe" : launchUrl ? "epic" : "exe",
+      launchTarget: hasExe ? launchExecutable : launchUrl || launchExecutable,
       installPath,
-      executablePath: fs.existsSync(launchExecutable || "") ? launchExecutable : null,
-      iconPath: fs.existsSync(launchExecutable || "") ? launchExecutable : null,
+      executablePath: hasExe ? launchExecutable : null,
+      iconPath: hasExe ? launchExecutable : null,
       focusProcess: launchExecutable ? path.basename(launchExecutable, path.extname(launchExecutable)) : null,
       appId: manifest.AppName || manifest.CatalogItemId || null,
       lastSeen: Date.now()
@@ -1129,49 +1131,189 @@ function tokenize(value) {
 }
 
 function dedupeGames(games) {
-  const byKey = new Map();
+  const groups = [];
+  const strongKeyToGroup = new Map();
+  const weakKeyToGroup = new Map();
+
   for (const game of games) {
-    const key = getDedupeKey(game);
-    const existing = byKey.get(key);
-    if (!existing || getGamePriority(game) > getGamePriority(existing)) {
-      byKey.set(key, game);
+    const strongKeys = getStrongDedupeKeys(game);
+    const weakKeys = getWeakDedupeKeys(game);
+    let group = strongKeys.map((key) => strongKeyToGroup.get(key)).find(Boolean);
+
+    if (!group) {
+      group = weakKeys
+        .map((key) => weakKeyToGroup.get(key))
+        .find((candidate) => candidate && shouldWeakDedupe(game, candidate.game));
+    }
+
+    if (!group) {
+      group = {
+        game,
+        strongKeys: new Set(),
+        weakKeys: new Set()
+      };
+      groups.push(group);
+    } else if (getGamePriority(game) > getGamePriority(group.game)) {
+      group.game = game;
+    }
+
+    for (const key of strongKeys) {
+      group.strongKeys.add(key);
+      strongKeyToGroup.set(key, group);
+    }
+
+    for (const key of weakKeys) {
+      group.weakKeys.add(key);
+      weakKeyToGroup.set(key, group);
     }
   }
-  return Array.from(byKey.values());
+
+  return groups.map((group) => group.game);
 }
 
-function getDedupeKey(game) {
-  if (game.appId && (game.source === "Steam" || game.source === "Epic")) {
-    return `${game.source}:appid:${String(game.appId).toLowerCase()}`;
+function getStrongDedupeKeys(game) {
+  const keys = [];
+  const executablePath = getExecutableDedupePath(game);
+  const installPath = getInstallDedupePath(game);
+
+  if (executablePath) {
+    keys.push(`exe:${executablePath}`);
   }
 
-  return `title:${normalizeTitle(game.title)}`;
+  if (installPath) {
+    keys.push(`install:${installPath}`);
+  }
+
+  if (game.appId && (game.source === "Steam" || game.source === "Epic")) {
+    keys.push(`launcher:${game.source.toLowerCase()}:${String(game.appId).toLowerCase()}`);
+  }
+
+  const steamAppId = game.launchType === "steam" ? getSteamAppId(game.launchTarget, game.launchArgs) : null;
+  if (steamAppId) {
+    keys.push(`launcher:steam:${steamAppId.toLowerCase()}`);
+  }
+
+  const epicUrl = game.launchType === "epic" ? getEpicLaunchUrl(game.launchTarget, game.launchArgs) : null;
+  if (epicUrl) {
+    keys.push(`launcher:epic:${normalizeTitle(epicUrl)}`);
+  }
+
+  return Array.from(new Set(keys));
+}
+
+function getWeakDedupeKeys(game) {
+  const title = normalizeTitle(game.title);
+  return title ? [`title:${title}`] : [];
+}
+
+function shouldWeakDedupe(candidate, existing) {
+  if (!candidate || !existing) {
+    return false;
+  }
+
+  const candidateExe = getExecutableDedupePath(candidate);
+  const existingExe = getExecutableDedupePath(existing);
+  const candidateInstall = getInstallDedupePath(candidate);
+  const existingInstall = getInstallDedupePath(existing);
+  const bothDirectExe = isDirectExecutableGame(candidate) && isDirectExecutableGame(existing);
+
+  if (bothDirectExe && candidateExe && existingExe && candidateExe !== existingExe) {
+    return false;
+  }
+
+  if (bothDirectExe && candidateInstall && existingInstall && candidateInstall !== existingInstall) {
+    return false;
+  }
+
+  return true;
 }
 
 function getGamePriority(game) {
   let priority = 0;
+
+  if (game.custom) {
+    priority += 90;
+  }
+
+  if (isDirectExecutableGame(game)) {
+    priority += 60;
+  } else if (game.launchType === "appx") {
+    priority += 24;
+  } else if (isLauncherProtocolGame(game)) {
+    priority += 8;
+  }
+
   if (game.source === "Steam" || game.source === "Epic") {
-    priority += 20;
+    priority += 12;
   }
-  if (game.launchType === "steam" || game.launchType === "epic") {
-    priority += 18;
+
+  if (game.launchArgs) {
+    priority += 3;
   }
-  if (game.launchType === "exe") {
-    priority += 16;
-  }
-  if (game.launchType === "appx") {
+
+  if (game.executablePath && fs.existsSync(game.executablePath)) {
     priority += 10;
   }
-  if (game.launchArgs) {
+
+  if (game.artworkPath) {
+    priority += 6;
+  }
+
+  if (game.iconPath) {
+    priority += 2;
+  }
+
+  if (getInstallDedupePath(game)) {
     priority += 4;
   }
-  if (game.executablePath && fs.existsSync(game.executablePath)) {
-    priority += 4;
+
+  if (game.source === "Shortcut") {
+    priority -= 4;
   }
+
   if (game.id && game.id.includes("known")) {
     priority -= 2;
   }
+
   return priority;
+}
+
+function isDirectExecutableGame(game) {
+  return game && game.launchType === "exe" && Boolean(getExecutableDedupePath(game));
+}
+
+function isLauncherProtocolGame(game) {
+  return game && (game.launchType === "steam" || game.launchType === "epic" || game.launchType === "url");
+}
+
+function getExecutableDedupePath(game) {
+  if (!game) {
+    return "";
+  }
+
+  const candidate = game.executablePath || (game.launchType === "exe" ? game.launchTarget : "");
+  if (!candidate || path.extname(candidate).toLowerCase() !== ".exe") {
+    return "";
+  }
+
+  return normalizePathKey(candidate);
+}
+
+function getInstallDedupePath(game) {
+  const installPath = game && game.installPath ? String(game.installPath) : "";
+  if (!installPath || /^windows apps$/i.test(installPath)) {
+    return "";
+  }
+
+  return normalizePathKey(installPath);
+}
+
+function normalizePathKey(value) {
+  return String(value || "")
+    .replace(/\//g, "\\")
+    .replace(/\\+$/g, "")
+    .toLowerCase()
+    .trim();
 }
 
 function normalizeTitle(value) {
@@ -1373,6 +1515,7 @@ function safeParseJson(text) {
 module.exports = {
   scanGames,
   gameFromFile,
+  dedupeGames,
   parseValveKeyValues,
   parseSteamLibraryFolders,
   buildEpicLaunchUrl

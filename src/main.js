@@ -56,6 +56,7 @@ app.whenReady().then(() => {
   app.setAppUserModelId("local.nova.deck");
   store = createStore(app.getPath("userData"));
   createWindow();
+  migrateLegacyStartupSetting();
   registerOverlayShortcuts();
   setupInputBridge({ app });
   setupUpdater({
@@ -546,19 +547,14 @@ function sourceRank(source) {
 }
 
 function isStartupEnabled() {
-  return fs.existsSync(getStartupScriptPath());
+  const settings = app.getLoginItemSettings(getStartupLoginItemSettings(false));
+  return Boolean(settings.openAtLogin || fs.existsSync(getStartupScriptPath()));
 }
 
 function setStartupEnabled(enabled) {
-  const startupScriptPath = getStartupScriptPath();
-  if (!enabled) {
-    fs.rmSync(startupScriptPath, { force: true });
-    return false;
-  }
-
-  fs.mkdirSync(path.dirname(startupScriptPath), { recursive: true });
-  fs.writeFileSync(startupScriptPath, buildStartupScript(), "utf8");
-  return true;
+  cleanupLegacyStartupScript();
+  app.setLoginItemSettings(getStartupLoginItemSettings(enabled));
+  return Boolean(app.getLoginItemSettings(getStartupLoginItemSettings(false)).openAtLogin);
 }
 
 function getStartupScriptPath() {
@@ -573,14 +569,25 @@ function getStartupScriptPath() {
   );
 }
 
-function buildStartupScript() {
-  const electronPath = process.execPath;
-  const appRoot = app.getAppPath();
-  return [
-    "@echo off",
-    `set "APP_DIR=${appRoot}"`,
-    `start "" "${electronPath}" "%APP_DIR%"`
-  ].join("\r\n");
+function migrateLegacyStartupSetting() {
+  if (!fs.existsSync(getStartupScriptPath())) {
+    return;
+  }
+
+  cleanupLegacyStartupScript();
+  app.setLoginItemSettings(getStartupLoginItemSettings(true));
+}
+
+function cleanupLegacyStartupScript() {
+  fs.rmSync(getStartupScriptPath(), { force: true });
+}
+
+function getStartupLoginItemSettings(openAtLogin) {
+  return {
+    openAtLogin: Boolean(openAtLogin),
+    path: process.execPath,
+    args: app.isPackaged ? [] : [app.getAppPath()]
+  };
 }
 
 function runPowerAction(action) {

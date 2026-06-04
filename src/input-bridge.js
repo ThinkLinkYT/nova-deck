@@ -75,6 +75,7 @@ function stopInputBridge() {
     helperProcess.kill();
     helperProcess = null;
   }
+  cleanupGeneratedBridgeFiles();
   return true;
 }
 
@@ -128,6 +129,8 @@ function clearInputBridgeProfile() {
     bridgeProcess = null;
   }
   stopStaleBridgeProcesses(bridgeScriptPath);
+  removeFileQuietly(bridgeScriptPath);
+  removeFileQuietly(bridgeProfilePath);
 
   activeBridgeProfile = null;
   return true;
@@ -326,6 +329,22 @@ function getReleaseEvents(profile) {
   }
 
   return Array.from(events.values());
+}
+
+function cleanupGeneratedBridgeFiles() {
+  removeFileQuietly(helperScriptPath);
+  removeFileQuietly(bridgeScriptPath);
+  removeFileQuietly(bridgeProfilePath);
+}
+
+function removeFileQuietly(filePath) {
+  if (!filePath) {
+    return;
+  }
+
+  try {
+    fs.rmSync(filePath, { force: true });
+  } catch {}
 }
 
 function getVirtualKey(output) {
@@ -656,6 +675,7 @@ public static class NovaNativeInputBridge {
     double menuCarryY = 0.0;
     DateTime appliedProfileWriteUtc = DateTime.MinValue;
     bool wheelRestReady = false;
+    double wheelRestX = 0.0;
     double wheelRestY = 0.0;
     double wheelRestZ = 0.0;
     double wheelRestR = 0.0;
@@ -697,6 +717,7 @@ public static class NovaNativeInputBridge {
           menuCarryX = 0.0;
           menuCarryY = 0.0;
           wheelRestReady = false;
+          wheelRestX = 0.0;
           Thread.Sleep(4);
           continue;
         }
@@ -712,6 +733,7 @@ public static class NovaNativeInputBridge {
           menuCarryX = 0.0;
           menuCarryY = 0.0;
           wheelRestReady = false;
+          wheelRestX = 0.0;
           lastMenuMode = menuMode;
         }
 
@@ -720,6 +742,7 @@ public static class NovaNativeInputBridge {
         double rightX = controller.RightX;
         double rightY = controller.RightY;
         double moveThreshold = Math.Min(0.85, profile.Deadzone + 0.06);
+        bool usingWheelJoystick = profile.WheelEnabled && controller.Source == "Joystick";
 
         if (menuMode) {
           SetHeldOutput(heldOutputs, "move:forward", false, "key:W");
@@ -727,18 +750,23 @@ public static class NovaNativeInputBridge {
           SetHeldOutput(heldOutputs, "move:left", false, "key:A");
           SetHeldOutput(heldOutputs, "move:right", false, "key:D");
 
-          double cursorX = Math.Abs(rightX) > Math.Abs(leftX) ? rightX : leftX;
-          double cursorY = Math.Abs(rightY) > Math.Abs(leftY) ? rightY : leftY;
-          cursorX = ApplyLookCurve(ApplyScaledDeadzone(cursorX, Math.Min(0.35, profile.Deadzone)));
-          cursorY = ApplyLookCurve(ApplyScaledDeadzone(cursorY, Math.Min(0.35, profile.Deadzone)));
-          menuCarryX += cursorX * 1650.0 * profile.MenuCursorSensitivity * dt;
-          menuCarryY += cursorY * 1650.0 * profile.MenuCursorSensitivity * dt;
-          int mdx = (int)Math.Truncate(menuCarryX);
-          int mdy = (int)Math.Truncate(menuCarryY);
-          if (mdx != 0) menuCarryX -= mdx;
-          if (mdy != 0) menuCarryY -= mdy;
-          if (mdx != 0 || mdy != 0) {
-            MouseMove(Clamp(mdx, -90, 90), Clamp(mdy, -90, 90));
+          if (usingWheelJoystick) {
+            menuCarryX = 0.0;
+            menuCarryY = 0.0;
+          } else {
+            double cursorX = Math.Abs(rightX) > Math.Abs(leftX) ? rightX : leftX;
+            double cursorY = Math.Abs(rightY) > Math.Abs(leftY) ? rightY : leftY;
+            cursorX = ApplyLookCurve(ApplyScaledDeadzone(cursorX, Math.Min(0.35, profile.Deadzone)));
+            cursorY = ApplyLookCurve(ApplyScaledDeadzone(cursorY, Math.Min(0.35, profile.Deadzone)));
+            menuCarryX += cursorX * 1650.0 * profile.MenuCursorSensitivity * dt;
+            menuCarryY += cursorY * 1650.0 * profile.MenuCursorSensitivity * dt;
+            int mdx = (int)Math.Truncate(menuCarryX);
+            int mdy = (int)Math.Truncate(menuCarryY);
+            if (mdx != 0) menuCarryX -= mdx;
+            if (mdy != 0) menuCarryY -= mdy;
+            if (mdx != 0 || mdy != 0) {
+              MouseMove(Clamp(mdx, -90, 90), Clamp(mdy, -90, 90));
+            }
           }
 
           SetHeldOutput(heldOutputs, "menu:accept-click", IsPressed(controller, 0) || IsPressed(controller, 7), "mouse:left");
@@ -752,6 +780,7 @@ public static class NovaNativeInputBridge {
         } else {
           if (profile.WheelEnabled) {
             if (!wheelRestReady || controller.Source != "Joystick") {
+              wheelRestX = controller.LeftX;
               wheelRestY = controller.RawY;
               wheelRestZ = controller.RawZ;
               wheelRestR = controller.RawR;
@@ -764,7 +793,10 @@ public static class NovaNativeInputBridge {
             SetHeldOutput(heldOutputs, "move:left", false, "key:A");
             SetHeldOutput(heldOutputs, "move:right", false, "key:D");
 
-            double steer = ApplyLookCurve(ApplyScaledDeadzone(leftX * profile.WheelSensitivity, profile.WheelDeadzone));
+            double steerInput = controller.Source == "Joystick"
+              ? Clamp((controller.LeftX - wheelRestX) * profile.WheelSensitivity, -1.0, 1.0)
+              : leftX * profile.WheelSensitivity;
+            double steer = ApplyLookCurve(ApplyScaledDeadzone(steerInput, profile.WheelDeadzone));
             double steerThreshold = Math.Min(0.75, profile.WheelDeadzone + 0.06);
             double throttle = controller.Throttle;
             double brake = controller.Brake;
@@ -796,13 +828,20 @@ public static class NovaNativeInputBridge {
             SetHeldOutput(heldOutputs, "move:right", leftX > moveThreshold, "key:D");
           }
 
-          double targetLookX = ApplyLookCurve(ApplyScaledDeadzone(rightX, profile.Deadzone));
-          double targetLookY = ApplyLookCurve(ApplyScaledDeadzone(rightY, profile.Deadzone));
+          double targetLookX = usingWheelJoystick ? 0.0 : ApplyLookCurve(ApplyScaledDeadzone(rightX, profile.Deadzone));
+          double targetLookY = usingWheelJoystick ? 0.0 : ApplyLookCurve(ApplyScaledDeadzone(rightY, profile.Deadzone));
           double response = 1.0 - Math.Exp(-dt * 24.0);
           smoothLookX += (targetLookX - smoothLookX) * response;
           smoothLookY += (targetLookY - smoothLookY) * response;
           if (Math.Abs(smoothLookX) < 0.0025) smoothLookX = 0.0;
           if (Math.Abs(smoothLookY) < 0.0025) smoothLookY = 0.0;
+
+          if (usingWheelJoystick) {
+            smoothLookX = 0.0;
+            smoothLookY = 0.0;
+            mouseCarryX = 0.0;
+            mouseCarryY = 0.0;
+          }
 
           mouseCarryX += smoothLookX * 1350.0 * profile.LookSensitivity * dt;
           mouseCarryY += smoothLookY * 1350.0 * profile.LookSensitivity * dt;
