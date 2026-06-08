@@ -87,9 +87,14 @@ app.on("will-quit", () => {
 });
 
 ipcMain.handle("library:scan", async () => {
-  const customGames = store.getCustomGames();
   const detectedGames = await scanGames();
-  return enrichGamesWithArtwork(mergeGames(detectedGames, customGames), app.getPath("userData"));
+  const enrichedDetectedGames = await enrichGamesWithArtwork(detectedGames, app.getPath("userData"));
+  const libraryState = store.updateDetectedGames(enrichedDetectedGames);
+  return buildLibraryPayload(libraryState.detectedGames, libraryState.libraryScannedAt);
+});
+
+ipcMain.handle("library:get", async () => {
+  return buildLibraryPayload(store.getDetectedGames(), store.getLibraryScannedAt());
 });
 
 ipcMain.handle("library:get-custom", () => {
@@ -531,6 +536,15 @@ function mergeGames(detectedGames, customGames) {
 
     return a.title.localeCompare(b.title);
   });
+}
+
+async function buildLibraryPayload(detectedGames, scannedAt) {
+  const customGames = store.getCustomGames();
+  const games = await enrichGamesWithArtwork(mergeGames(detectedGames, customGames), app.getPath("userData"));
+  return {
+    games,
+    scannedAt: Number(scannedAt || 0)
+  };
 }
 
 function sourceRank(source) {

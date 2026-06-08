@@ -107,7 +107,8 @@ const DEFAULT_APP_SETTINGS = {
   audioOutputId: "default",
   audioOutputLabel: "System default",
   startView: "home",
-  rescanOnStart: true,
+  rescanOnStart: false,
+  rescanOnStartConfigured: false,
   reduceMotion: false,
   showHiddenLaunchers: false,
   overlayEnabled: true,
@@ -141,6 +142,7 @@ const CONTROLLER_MIN_REPEAT_MS = 85;
 const state = {
   games: [],
   filteredGames: [],
+  libraryScannedAt: 0,
   selectedIndex: 0,
   activeView: "home",
   sourceFilter: "All",
@@ -245,7 +247,12 @@ async function init() {
       button.classList.toggle("active", button.dataset.view === state.activeView);
     });
   }
-  await scanLibrary();
+  const loadedLibrary = await loadLibrary();
+  if (!loadedLibrary.games.length && !loadedLibrary.scannedAt) {
+    await scanLibrary();
+  } else if (state.appSettings.rescanOnStart) {
+    scanLibrary({ keepSelection: true });
+  }
 }
 
 function bindEvents() {
@@ -381,20 +388,51 @@ async function loadUpdateStatus() {
   }
 }
 
-async function scanLibrary() {
-  state.scanning = true;
-  elements.activityText.textContent = "Scanning local library...";
-  renderLoading();
+async function loadLibrary() {
+  elements.activityText.textContent = "Loading saved library...";
 
   try {
     await loadGameProfiles();
-    state.games = applyGameProfilesToGames(await api.scanLibrary());
-    state.scanning = false;
+    const library = normalizeLibraryPayload(api.getLibrary ? await api.getLibrary() : await api.scanLibrary());
+    state.libraryScannedAt = library.scannedAt;
+    state.games = applyGameProfilesToGames(library.games);
     state.selectedIndex = 0;
     applyFilters();
     render();
+    elements.activityText.textContent = library.scannedAt ? "Ready." : "Ready. Scan once to build the local library.";
+    return library;
+  } catch (error) {
+    elements.activityText.textContent = "Saved library could not be loaded.";
+    showToast(error.message || "Saved library could not be loaded.");
+    render();
+    return { games: [], scannedAt: 0 };
+  }
+}
+
+async function scanLibrary(options = {}) {
+  const previousGameId = options.keepSelection ? getSelectedGame()?.id : "";
+  state.scanning = true;
+  elements.activityText.textContent = "Scanning local library...";
+  if (state.games.length) {
+    render();
+  } else {
+    renderLoading();
+  }
+
+  try {
+    await loadGameProfiles();
+    const library = normalizeLibraryPayload(await api.scanLibrary());
+    state.libraryScannedAt = library.scannedAt || Date.now();
+    state.games = applyGameProfilesToGames(library.games);
+    state.scanning = false;
+    state.selectedIndex = 0;
+    applyFilters();
+    if (previousGameId) {
+      selectGameById(previousGameId);
+    }
+    render();
     elements.activityText.textContent = "Ready.";
-    showToast(`Found ${state.games.length} local games.`);
+    showToast(`Library updated: ${state.games.length} local games.`);
   } catch (error) {
     state.scanning = false;
     elements.activityText.textContent = "Scan failed.";
@@ -410,7 +448,7 @@ async function addGame() {
   }
 
   await loadGameProfiles();
-  state.games = applyGameProfilesToGames(await api.scanLibrary());
+  await loadLibrary();
   state.search = "";
   elements.searchInput.value = "";
   applyFilters();
@@ -1094,6 +1132,8 @@ function renderSettings() {
         <div class="settings-card-grid">
           <section class="settings-card">
             <strong>Scan</strong>
+            <p>${escapeHtml(formatLastScan(state.libraryScannedAt))}</p>
+            ${renderToggleButton("toggle-rescan-on-start", state.appSettings.rescanOnStart, "Scan when Nova Deck opens")}
             <button class="settings-action" data-action="scan">Rescan now</button>
           </section>
           ${renderHiddenGamesPanel()}
@@ -1753,6 +1793,8 @@ function handleContentClick(event) {
     openOverlay();
   } else if (action === "toggle-reduce-motion") {
     updateAppSetting("reduceMotion", !state.appSettings.reduceMotion);
+  } else if (action === "toggle-rescan-on-start") {
+    updateAppSetting("rescanOnStart", !state.appSettings.rescanOnStart);
   } else if (action === "toggle-hidden-launchers") {
     updateAppSetting("showHiddenLaunchers", !state.appSettings.showHiddenLaunchers);
   } else if (action === "set-theme") {
@@ -3284,10 +3326,14 @@ async function toggleStartup() {
 }
 
 async function updateAppSetting(key, value) {
-  await updateAppSettings({
+  const settings = {
     ...state.appSettings,
     [key]: value
-  });
+  };
+  if (key === "rescanOnStart") {
+    settings.rescanOnStartConfigured = true;
+  }
+  await updateAppSettings(settings);
 }
 
 async function updateAppSettings(settings) {
@@ -3858,15 +3904,36 @@ function normalizeAppSettings(settings) {
   const input = settings && typeof settings === "object" ? settings : {};
   const nextSettings = cloneSettings(DEFAULT_APP_SETTINGS);
   const startView = ["home", "library", "settings"].includes(input.startView) ? input.startView : nextSettings.startView;
+  const rescanOnStartConfigured = typeof input.rescanOnStartConfigured === "boolean"
+    ? input.rescanOnStartConfigured
+    : DEFAULT_APP_SETTINGS.rescanOnStartConfigured;
   nextSettings.audioOutputId = normalizeText(input.audioOutputId, DEFAULT_APP_SETTINGS.audioOutputId);
   nextSettings.audioOutputLabel = normalizeText(input.audioOutputLabel, DEFAULT_APP_SETTINGS.audioOutputLabel);
   nextSettings.startView = startView;
-  nextSettings.rescanOnStart = typeof input.rescanOnStart === "boolean" ? input.rescanOnStart : DEFAULT_APP_SETTINGS.rescanOnStart;
+  nextSettings.rescanOnStart = rescanOnStartConfigured && typeof input.rescanOnStart === "boolean"
+    ? input.rescanOnStart
+    : DEFAULT_APP_SETTINGS.rescanOnStart;
+  nextSettings.rescanOnStartConfigured = rescanOnStartConfigured;
   nextSettings.reduceMotion = typeof input.reduceMotion === "boolean" ? input.reduceMotion : DEFAULT_APP_SETTINGS.reduceMotion;
   nextSettings.showHiddenLaunchers = typeof input.showHiddenLaunchers === "boolean" ? input.showHiddenLaunchers : DEFAULT_APP_SETTINGS.showHiddenLaunchers;
   nextSettings.overlayEnabled = typeof input.overlayEnabled === "boolean" ? input.overlayEnabled : DEFAULT_APP_SETTINGS.overlayEnabled;
   nextSettings.theme = THEMES.some((theme) => theme.id === input.theme) ? input.theme : DEFAULT_APP_SETTINGS.theme;
   return nextSettings;
+}
+
+function normalizeLibraryPayload(payload) {
+  if (Array.isArray(payload)) {
+    return {
+      games: payload,
+      scannedAt: 0
+    };
+  }
+
+  const input = payload && typeof payload === "object" ? payload : {};
+  return {
+    games: Array.isArray(input.games) ? input.games : [],
+    scannedAt: normalizePositiveNumber(input.scannedAt)
+  };
 }
 
 function normalizeUpdateStatus(status = {}) {
@@ -4043,6 +4110,27 @@ function formatTime(timestamp) {
     minute: "2-digit",
     second: "2-digit"
   }).format(new Date(timestamp));
+}
+
+function formatLastScan(timestamp) {
+  if (!timestamp) {
+    return "No saved scan yet. Rescan once to build the cache.";
+  }
+
+  const elapsed = Date.now() - Number(timestamp);
+  const minute = 60 * 1000;
+  const hour = 60 * minute;
+  const day = 24 * hour;
+  if (elapsed < minute) {
+    return "Last scan just now.";
+  }
+  if (elapsed < hour) {
+    return `Last scan ${Math.max(1, Math.floor(elapsed / minute))} minutes ago.`;
+  }
+  if (elapsed < day) {
+    return `Last scan ${Math.max(1, Math.floor(elapsed / hour))} hours ago.`;
+  }
+  return `Last scan ${new Intl.DateTimeFormat([], { month: "short", day: "numeric" }).format(new Date(timestamp))}.`;
 }
 
 function getUpdateProgressDetail(status) {
@@ -4491,9 +4579,19 @@ function createPreviewApi() {
   });
 
   return {
+    async getLibrary() {
+      await delay(60);
+      return {
+        games: previewGames,
+        scannedAt: Date.now() - 12 * 60 * 1000
+      };
+    },
     async scanLibrary() {
       await delay(250);
-      return previewGames;
+      return {
+        games: previewGames,
+        scannedAt: Date.now()
+      };
     },
     async getCustomGames() {
       return previewGames.filter((game) => game.custom);

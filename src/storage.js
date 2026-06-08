@@ -6,7 +6,8 @@ const DEFAULT_APP_SETTINGS = {
   audioOutputId: "default",
   audioOutputLabel: "System default",
   startView: "home",
-  rescanOnStart: true,
+  rescanOnStart: false,
+  rescanOnStartConfigured: false,
   reduceMotion: false,
   showHiddenLaunchers: false,
   overlayEnabled: true,
@@ -37,6 +38,8 @@ function createStore(userDataPath) {
     try {
       if (!fs.existsSync(filePath)) {
         return {
+          detectedGames: [],
+          libraryScannedAt: 0,
           customGames: [],
           controllerSettings: normalizeControllerSettings(),
           appSettings: normalizeAppSettings(),
@@ -47,6 +50,8 @@ function createStore(userDataPath) {
 
       const parsed = JSON.parse(fs.readFileSync(filePath, "utf8"));
       return {
+        detectedGames: normalizeStoredGames(parsed.detectedGames),
+        libraryScannedAt: normalizePositiveInteger(parsed.libraryScannedAt),
         customGames: Array.isArray(parsed.customGames) ? parsed.customGames : [],
         controllerSettings: normalizeControllerSettings(parsed.controllerSettings),
         appSettings: normalizeAppSettings(parsed.appSettings),
@@ -55,6 +60,8 @@ function createStore(userDataPath) {
       };
     } catch {
       return {
+        detectedGames: [],
+        libraryScannedAt: 0,
         customGames: [],
         controllerSettings: normalizeControllerSettings(),
         appSettings: normalizeAppSettings(),
@@ -69,6 +76,14 @@ function createStore(userDataPath) {
   }
 
   return {
+    getDetectedGames() {
+      return readStore().detectedGames;
+    },
+
+    getLibraryScannedAt() {
+      return readStore().libraryScannedAt;
+    },
+
     getCustomGames() {
       return readStore().customGames;
     },
@@ -101,6 +116,21 @@ function createStore(userDataPath) {
         appSettings
       });
       return appSettings;
+    },
+
+    updateDetectedGames(games) {
+      const current = readStore();
+      const detectedGames = normalizeStoredGames(games);
+      const libraryScannedAt = Date.now();
+      writeStore({
+        ...current,
+        detectedGames,
+        libraryScannedAt
+      });
+      return {
+        detectedGames,
+        libraryScannedAt
+      };
     },
 
     updateControllerSettings(settings) {
@@ -187,16 +217,64 @@ function normalizeAppSettings(settings = {}) {
   const theme = ["nova", "ember", "ocean", "light"].includes(settings.theme)
     ? settings.theme
     : DEFAULT_APP_SETTINGS.theme;
+  const rescanOnStartConfigured = normalizeBoolean(
+    settings.rescanOnStartConfigured,
+    DEFAULT_APP_SETTINGS.rescanOnStartConfigured
+  );
 
   return {
     audioOutputId: normalizeString(settings.audioOutputId, DEFAULT_APP_SETTINGS.audioOutputId, 180),
     audioOutputLabel: normalizeString(settings.audioOutputLabel, DEFAULT_APP_SETTINGS.audioOutputLabel, 180),
     startView,
-    rescanOnStart: normalizeBoolean(settings.rescanOnStart, DEFAULT_APP_SETTINGS.rescanOnStart),
+    rescanOnStart: rescanOnStartConfigured
+      ? normalizeBoolean(settings.rescanOnStart, DEFAULT_APP_SETTINGS.rescanOnStart)
+      : DEFAULT_APP_SETTINGS.rescanOnStart,
+    rescanOnStartConfigured,
     reduceMotion: normalizeBoolean(settings.reduceMotion, DEFAULT_APP_SETTINGS.reduceMotion),
     showHiddenLaunchers: normalizeBoolean(settings.showHiddenLaunchers, DEFAULT_APP_SETTINGS.showHiddenLaunchers),
     overlayEnabled: normalizeBoolean(settings.overlayEnabled, DEFAULT_APP_SETTINGS.overlayEnabled),
     theme
+  };
+}
+
+function normalizeStoredGames(games) {
+  if (!Array.isArray(games)) {
+    return [];
+  }
+
+  return games
+    .map(normalizeStoredGame)
+    .filter(Boolean)
+    .sort((a, b) => a.title.localeCompare(b.title));
+}
+
+function normalizeStoredGame(game) {
+  if (!game || typeof game !== "object" || Array.isArray(game)) {
+    return null;
+  }
+
+  const id = normalizeOptionalString(game.id, 180);
+  const title = normalizeOptionalString(game.title, 180);
+  if (!id || !title) {
+    return null;
+  }
+
+  return {
+    id,
+    title,
+    source: normalizeString(game.source, "Local", 80),
+    installPath: normalizeOptionalString(game.installPath, 520),
+    launchTarget: normalizeOptionalString(game.launchTarget, 900),
+    launchType: normalizeOptionalString(game.launchType, 80),
+    appId: normalizeOptionalString(game.appId, 180),
+    executablePath: normalizeOptionalString(game.executablePath, 520),
+    focusProcess: normalizeOptionalString(game.focusProcess, 120),
+    launchArgs: normalizeOptionalString(game.launchArgs, 260),
+    artworkPath: normalizeOptionalString(game.artworkPath, 520),
+    artworkUrl: normalizeOptionalString(game.artworkUrl, 900),
+    artworkType: normalizeOptionalString(game.artworkType, 40),
+    iconPath: normalizeOptionalString(game.iconPath, 520),
+    custom: Boolean(game.custom)
   };
 }
 

@@ -1,6 +1,7 @@
 const { contextBridge, ipcRenderer } = require("electron");
 
 contextBridge.exposeInMainWorld("nova", {
+  getLibrary: () => ipcRenderer.invoke("library:get"),
   scanLibrary: () => ipcRenderer.invoke("library:scan"),
   getCustomGames: () => ipcRenderer.invoke("library:get-custom"),
   addGame: () => ipcRenderer.invoke("library:add-game"),
