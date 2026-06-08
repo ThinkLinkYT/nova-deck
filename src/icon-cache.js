@@ -6,10 +6,65 @@ async function enrichGamesWithArtwork(games, userDataPath) {
   const cacheDir = path.join(userDataPath, "artwork-cache");
   fs.mkdirSync(cacheDir, { recursive: true });
 
-  const enriched = [];
-  for (const game of games) {
-    enriched.push(await enrichGameWithArtwork(game, cacheDir));
+  const pendingExtractions = [];
+  const enriched = games.map((game, index) => {
+    const coverArtwork = firstExistingPath([game.artworkPath]);
+
+    if (coverArtwork && isHighQualityArtwork(coverArtwork)) {
+      return {
+        ...game,
+        artworkUrl: pathToFileUrl(coverArtwork),
+        artworkType: "cover"
+      };
+    }
+
+    const directIcon = firstExistingPath([game.iconPath]);
+    if (directIcon && isHighQualityArtwork(directIcon)) {
+      return {
+        ...game,
+        artworkUrl: pathToFileUrl(directIcon),
+        artworkType: "icon"
+      };
+    }
+
+    const iconSource = cleanIconPath(getIconSource(game, directIcon || coverArtwork));
+    if (!iconSource || !fs.existsSync(iconSource)) {
+      return game;
+    }
+
+    if (isHighQualityArtwork(iconSource)) {
+      return {
+        ...game,
+        artworkUrl: pathToFileUrl(iconSource),
+        artworkType: "icon"
+      };
+    }
+
+    const outPath = getIconOutputPath(iconSource, cacheDir);
+    if (fs.existsSync(outPath)) {
+      return {
+        ...game,
+        artworkUrl: pathToFileUrl(outPath),
+        artworkType: "icon"
+      };
+    }
+
+    pendingExtractions.push({ index, sourcePath: iconSource, outPath });
+    return game;
+  });
+
+  await batchExtractIcons(pendingExtractions);
+
+  for (const extraction of pendingExtractions) {
+    if (fs.existsSync(extraction.outPath)) {
+      enriched[extraction.index] = {
+        ...enriched[extraction.index],
+        artworkUrl: pathToFileUrl(extraction.outPath),
+        artworkType: "icon"
+      };
+    }
   }
+
   return enriched;
 }
 
@@ -69,12 +124,36 @@ async function extractIcon(sourcePath, cacheDir) {
     return cleanedSource;
   }
 
-  const outPath = path.join(cacheDir, `${stableId(cleanedSource)}-256.png`);
+  const outPath = getIconOutputPath(cleanedSource, cacheDir);
   if (fs.existsSync(outPath)) {
     return outPath;
   }
 
+  await batchExtractIcons([{ sourcePath: cleanedSource, outPath }]);
+  return fs.existsSync(outPath) ? outPath : null;
+}
+
+function getIconOutputPath(sourcePath, cacheDir) {
+  return path.join(cacheDir, `${stableId(sourcePath)}-256.png`);
+}
+
+async function batchExtractIcons(extractions) {
+  const pending = extractions
+    .filter((item) => item && item.sourcePath && item.outPath)
+    .filter((item) => fs.existsSync(item.sourcePath) && !fs.existsSync(item.outPath));
+
+  if (!pending.length) {
+    return;
+  }
+
+  const tasksJson = JSON.stringify(pending.map((item) => ({
+    source: item.sourcePath,
+    output: item.outPath
+  })));
   const command = `
+    $tasks = ConvertFrom-Json @'
+${tasksJson}
+'@
     Add-Type -AssemblyName System.Drawing
     Add-Type -ReferencedAssemblies "System.Drawing" -TypeDefinition @"
 using System;
@@ -146,31 +225,38 @@ public static class ShellIconExtractor {
   }
 }
 "@
-    $source = ${JSON.stringify(cleanedSource)}
-    $out = ${JSON.stringify(outPath)}
-    try {
-      [ShellIconExtractor]::SaveIcon($source, $out, 256)
-    } catch {
-      $icon = [System.Drawing.Icon]::ExtractAssociatedIcon($source)
-      if ($icon -ne $null) {
-        $bitmap = New-Object System.Drawing.Bitmap 256, 256
-        $graphics = [System.Drawing.Graphics]::FromImage($bitmap)
-        $graphics.Clear([System.Drawing.Color]::Transparent)
-        $graphics.InterpolationMode = [System.Drawing.Drawing2D.InterpolationMode]::HighQualityBicubic
-        $graphics.DrawIcon($icon, (New-Object System.Drawing.Rectangle 0, 0, 256, 256))
-        $bitmap.Save($out, [System.Drawing.Imaging.ImageFormat]::Png)
-        $graphics.Dispose()
-        $bitmap.Dispose()
-        $icon.Dispose()
+    foreach ($task in @($tasks)) {
+      $source = [string]$task.source
+      $out = [string]$task.output
+      if ([string]::IsNullOrWhiteSpace($source) -or [string]::IsNullOrWhiteSpace($out) -or (Test-Path -LiteralPath $out)) {
+        continue
+      }
+
+      try {
+        [ShellIconExtractor]::SaveIcon($source, $out, 256)
+      } catch {
+        try {
+          $icon = [System.Drawing.Icon]::ExtractAssociatedIcon($source)
+          if ($icon -ne $null) {
+            $bitmap = New-Object System.Drawing.Bitmap 256, 256
+            $graphics = [System.Drawing.Graphics]::FromImage($bitmap)
+            $graphics.Clear([System.Drawing.Color]::Transparent)
+            $graphics.InterpolationMode = [System.Drawing.Drawing2D.InterpolationMode]::HighQualityBicubic
+            $graphics.DrawIcon($icon, (New-Object System.Drawing.Rectangle 0, 0, 256, 256))
+            $bitmap.Save($out, [System.Drawing.Imaging.ImageFormat]::Png)
+            $graphics.Dispose()
+            $bitmap.Dispose()
+            $icon.Dispose()
+          }
+        } catch {}
       }
     }
   `;
 
   try {
-    await execPowerShell(command);
-    return fs.existsSync(outPath) ? outPath : null;
+    await execPowerShell(command, Math.min(60000, 12000 + pending.length * 2500));
   } catch {
-    return null;
+    // Missing artwork is fine; the UI falls back to initials.
   }
 }
 
@@ -210,12 +296,12 @@ function pathToFileUrl(filePath) {
   return `file:///${path.resolve(filePath).replace(/\\/g, "/").replace(/ /g, "%20")}`;
 }
 
-function execPowerShell(command) {
+function execPowerShell(command, timeout = 12000) {
   return new Promise((resolve, reject) => {
     execFile(
       "powershell.exe",
       ["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", command],
-      { windowsHide: true, timeout: 12000 },
+      { windowsHide: true, timeout },
       (error, stdout, stderr) => {
         if (error) {
           reject(error);

@@ -2,6 +2,14 @@ const fs = require("fs");
 const path = require("path");
 const { execFile } = require("child_process");
 
+const START_APPS_CACHE_MS = 15 * 1000;
+const shortcutResolveCache = new Map();
+let startAppsCache = {
+  timestamp: 0,
+  promise: null,
+  apps: null
+};
+
 async function scanGames() {
   const [
     steamGames,
@@ -159,14 +167,8 @@ async function scanEpicGames() {
 }
 
 async function scanStartMenuGames() {
-  const command = `
-    [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
-    Get-StartApps | Select-Object Name,AppID | ConvertTo-Json -Compress
-  `;
-
   try {
-    const output = await execPowerShell(command, 20000);
-    return normalizeArray(JSON.parse(output || "[]"))
+    return (await getStartApps())
       .filter((app) => app.Name && app.AppID && isLikelyGameName(app.Name))
       .map((app) => startAppToGame(app))
       .filter(Boolean);
@@ -183,7 +185,7 @@ async function scanUninstallGames() {
       'HKLM:\\SOFTWARE\\WOW6432Node\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\*',
       'HKCU:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\*'
     )
-    Get-ItemProperty $keys -ErrorAction SilentlyContinue |
+    Get-ItemProperty -Path $keys -Name DisplayName,DisplayIcon,InstallLocation,Publisher -ErrorAction SilentlyContinue |
       Where-Object { $_.DisplayName } |
       Select-Object DisplayName,DisplayIcon,InstallLocation,Publisher |
       ConvertTo-Json -Compress
@@ -372,7 +374,9 @@ async function scanShortcutGames() {
     .map((filePath) => shortcutUrlToGame(filePath))
     .filter(Boolean);
 
-  const lnkFiles = shortcutFiles.filter((filePath) => path.extname(filePath).toLowerCase() === ".lnk");
+  const lnkFiles = shortcutFiles
+    .filter((filePath) => path.extname(filePath).toLowerCase() === ".lnk")
+    .filter(shouldResolveShortcutFile);
   const shortcuts = await resolveShortcuts(lnkFiles);
   const lnkGames = shortcuts
     .map((shortcut) => shortcutToGame(shortcut))
@@ -382,19 +386,10 @@ async function scanShortcutGames() {
 }
 
 async function scanMinecraftApps() {
-  const command = `
-    [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
-    Get-StartApps |
-      Where-Object { $_.Name -match 'Minecraft|Lunar|Badlion|Prism|Modrinth|CurseForge|Feather|MultiMC|ATLauncher|GDLauncher' } |
-      Select-Object Name,AppID |
-      ConvertTo-Json -Compress
-  `;
-
   try {
-    const output = await execPowerShell(command);
-    const apps = normalizeArray(JSON.parse(output || "[]"));
-    return apps
+    return (await getStartApps())
       .filter((app) => app.Name && app.AppID)
+      .filter((app) => /Minecraft|Lunar|Badlion|Prism|Modrinth|CurseForge|Feather|MultiMC|ATLauncher|GDLauncher/i.test(app.Name))
       .map((app) => ({
         id: `appx:${stableId(app.AppID)}`,
         title: cleanTitle(app.Name),
@@ -496,12 +491,7 @@ async function getSteamRoots() {
     ...getSteamDriveCandidates()
   ]);
 
-  const registryValues = await Promise.all([
-    getRegistryValue("HKCU:\\Software\\Valve\\Steam", "SteamPath"),
-    getRegistryValue("HKCU:\\Software\\Valve\\Steam", "InstallPath"),
-    getRegistryValue("HKLM:\\SOFTWARE\\WOW6432Node\\Valve\\Steam", "InstallPath"),
-    getRegistryValue("HKLM:\\SOFTWARE\\Valve\\Steam", "InstallPath")
-  ]);
+  const registryValues = await getSteamRegistryRoots();
 
   for (const registryPath of registryValues) {
     if (registryPath) {
@@ -510,6 +500,57 @@ async function getSteamRoots() {
   }
 
   return Array.from(candidates);
+}
+
+async function getSteamRegistryRoots() {
+  const command = `
+    [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+    $values = @(
+      @{ Path = 'HKCU:\\Software\\Valve\\Steam'; Name = 'SteamPath' },
+      @{ Path = 'HKCU:\\Software\\Valve\\Steam'; Name = 'InstallPath' },
+      @{ Path = 'HKLM:\\SOFTWARE\\WOW6432Node\\Valve\\Steam'; Name = 'InstallPath' },
+      @{ Path = 'HKLM:\\SOFTWARE\\Valve\\Steam'; Name = 'InstallPath' }
+    )
+    $results = foreach ($value in $values) {
+      $item = Get-ItemProperty -Path $value.Path -Name $value.Name -ErrorAction SilentlyContinue
+      if ($item) { $item.($value.Name) }
+    }
+    @($results) | Where-Object { $_ } | Select-Object -Unique | ConvertTo-Json -Compress
+  `;
+
+  try {
+    const output = await execPowerShell(command, 6000);
+    return normalizeArray(JSON.parse(output || "[]"));
+  } catch {
+    return [];
+  }
+}
+
+async function getStartApps() {
+  const now = Date.now();
+  if (startAppsCache.apps && now - startAppsCache.timestamp < START_APPS_CACHE_MS) {
+    return startAppsCache.apps;
+  }
+
+  if (!startAppsCache.promise) {
+    const command = `
+      [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+      Get-StartApps | Select-Object Name,AppID | ConvertTo-Json -Compress
+    `;
+    startAppsCache.promise = execPowerShell(command, 12000)
+      .then((output) => normalizeArray(JSON.parse(output || "[]")))
+      .catch(() => [])
+      .then((apps) => {
+        startAppsCache = {
+          timestamp: Date.now(),
+          promise: null,
+          apps
+        };
+        return apps;
+      });
+  }
+
+  return startAppsCache.promise;
 }
 
 function getSteamDriveCandidates() {
@@ -646,6 +687,23 @@ function listShortcutFiles(rootPath) {
     }
   });
   return results;
+}
+
+function shouldResolveShortcutFile(filePath) {
+  const name = cleanTitle(path.basename(filePath, path.extname(filePath)));
+  const searchText = `${name} ${filePath}`;
+  if (isBlockedAppName(searchText)) {
+    return false;
+  }
+
+  return isDesktopShortcutPath(filePath)
+    || isLikelyGameName(name)
+    || isMinecraftShortcut(name, filePath, "")
+    || /\\(Games|Steam|Epic Games|Xbox|Battle\.net|Blizzard|Ubisoft|EA Games|Origin Games|GOG Games|itch|itch\.io|Minecraft)\\/i.test(filePath);
+}
+
+function isDesktopShortcutPath(filePath) {
+  return /\\Desktop\\/i.test(`${filePath}\\`);
 }
 
 function shortcutUrlToGame(filePath) {
@@ -1363,9 +1421,25 @@ async function resolveShortcuts(filePaths) {
     return [];
   }
 
+  const cached = [];
+  const unresolved = [];
+  for (const filePath of filePaths) {
+    const cacheKey = getShortcutCacheKey(filePath);
+    const cachedShortcut = cacheKey ? shortcutResolveCache.get(cacheKey) : null;
+    if (cachedShortcut) {
+      cached.push(cachedShortcut);
+    } else {
+      unresolved.push(filePath);
+    }
+  }
+
+  if (!unresolved.length) {
+    return cached;
+  }
+
   const command = `
     $files = ConvertFrom-Json @'
-${JSON.stringify(filePaths)}
+${JSON.stringify(unresolved)}
 '@
     $shell = New-Object -ComObject WScript.Shell
     [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
@@ -1387,9 +1461,29 @@ ${JSON.stringify(filePaths)}
 
   try {
     const output = await execPowerShell(command, 20000);
-    return normalizeArray(JSON.parse(output || "[]"));
+    const resolved = normalizeArray(JSON.parse(output || "[]"));
+    for (const shortcut of resolved) {
+      const cacheKey = getShortcutCacheKey(shortcut.filePath);
+      if (cacheKey) {
+        shortcutResolveCache.set(cacheKey, shortcut);
+      }
+    }
+    return [...cached, ...resolved];
   } catch {
-    return [];
+    return cached;
+  }
+}
+
+function getShortcutCacheKey(filePath) {
+  if (!filePath) {
+    return "";
+  }
+
+  try {
+    const stats = fs.statSync(filePath);
+    return `${normalizePathKey(filePath)}:${Math.round(stats.mtimeMs)}:${stats.size}`;
+  } catch {
+    return "";
   }
 }
 
